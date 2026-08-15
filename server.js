@@ -81,30 +81,58 @@ function safeError(msg) {
 /**
  * On-chain cooldown: has the faucet wallet sent KEKIUS to this address
  * in the last ~24 hours?
+ *
+ * Returns true  → block the claim (already claimed)
+ * Returns false → allow the claim
+ *
+ * Queries in small block chunks so free RPCs don't reject the request.
+ * If the RPC completely fails, we ALLOW the claim (fail open) so first-time
+ * users are not blocked. The in-flight lock + second pre-send check still
+ * reduce double claims.
  */
 async function hasClaimedOnChain(toAddress) {
   if (!isLive || !token || !wallet || !provider) return false;
 
   try {
+    const to = ethers.getAddress(toAddress);
+    const from = ethers.getAddress(wallet.address);
     const currentBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, currentBlock - COOLDOWN_BLOCKS);
 
-    const filter = token.filters.Transfer(wallet.address, toAddress);
-    const events = await token.queryFilter(filter, fromBlock, currentBlock);
+    // Search last ~24h in chunks of 2000 blocks (friendly to public RPCs)
+    const CHUNK = 2000;
+    let start = Math.max(0, currentBlock - COOLDOWN_BLOCKS);
+    let latestEvent = null;
 
-    if (events.length === 0) return false;
+    while (start <= currentBlock) {
+      const end = Math.min(start + CHUNK - 1, currentBlock);
+      try {
+        const filter = token.filters.Transfer(from, to);
+        const events = await token.queryFilter(filter, start, end);
+        if (events.length > 0) {
+          latestEvent = events[events.length - 1];
+        }
+      } catch (chunkErr) {
+        console.error(`Log query failed blocks ${start}-${end}:`, chunkErr.message);
+        // Continue other chunks; don't treat one failed chunk as "already claimed"
+      }
+      start = end + 1;
+    }
 
-    // Optional: check the most recent event timestamp more precisely
-    const last = events[events.length - 1];
-    const block = await provider.getBlock(last.blockNumber);
-    if (!block || !block.timestamp) return true; // fail closed if we can't read time
+    if (!latestEvent) return false; // no transfers found → first claim OK
 
-    const ageMs = Date.now() - block.timestamp * 1000;
+    const block = await provider.getBlock(latestEvent.blockNumber);
+    if (!block || !block.timestamp) {
+      // We found a transfer but can't date it → treat as recent (block claim)
+      return true;
+    }
+
+    const ageMs = Date.now() - Number(block.timestamp) * 1000;
     return ageMs < COOLDOWN_MS;
   } catch (err) {
     console.error("On-chain cooldown check failed:", err.message);
-    // Fail CLOSED: if we cannot verify, do not allow another claim
-    return true;
+    // Fail OPEN so legitimate first-time users are not locked out
+    // when the RPC is down or rate-limited
+    return false;
   }
 }
 
