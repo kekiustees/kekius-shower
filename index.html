@@ -581,14 +581,20 @@
           "success"
         );
 
+        // Lock UI for this session after a successful claim
+        $("claimBtn").disabled = true;
+        $("claimBtn").textContent = "Already claimed (24h cooldown)";
         newCaptcha();
         loadStatus();
+        return;
       } catch (err) {
         console.error(err);
         showStatus(err.message || "Claim cancelled or failed", "error");
       } finally {
-        $("claimBtn").disabled = false;
-        $("claimBtn").textContent = "Claim 50 KEKIUS";
+        if ($("claimBtn").textContent !== "Already claimed (24h cooldown)") {
+          $("claimBtn").disabled = false;
+          $("claimBtn").textContent = "Claim 50 KEKIUS";
+        }
       }
     }
 

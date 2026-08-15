@@ -1,13 +1,13 @@
 /**
  * Kekius Maximus – Shower Backend
  * --------------------------------
- * Security-focused claim server.
+ * ONE claim per address every 24 hours.
  *
- * LIVE mode requires:
- *   PRIVATE_KEY  = dedicated hot-wallet private key (never commit this)
- *   RPC_URL      = Ethereum RPC endpoint
+ * Cooldown source of truth when LIVE:
+ *   On-chain Transfer events from the faucet wallet → user
+ *   (works on Vercel; cannot be bypassed by clearing files/storage)
  *
- * Without PRIVATE_KEY the server runs in safe DEMO mode.
+ * File-based claims.json is only a secondary cache for local/DEMO.
  */
 
 require("dotenv").config();
@@ -27,14 +27,17 @@ const TOKEN_ADDRESS = "0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78";
 const CLAIM_AMOUNT = 50n;
 const TOKEN_DECIMALS = 9;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
-const SIGNATURE_MAX_AGE_MS = 5 * 60 * 1000; // signatures older than 5 min rejected
+const COOLDOWN_BLOCKS = 7500; // ~24h of Ethereum blocks (with buffer)
+const SIGNATURE_MAX_AGE_MS = 5 * 60 * 1000;
 const CLAIMS_FILE = path.join(__dirname, "claims.json");
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
 const RPC_URL = process.env.RPC_URL || "https://eth.llamarpc.com";
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*"; // set to your domain in production
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
 
-// ============ STATE ============
+// In-memory lock to prevent double-claim races on the same instance
+const inflight = new Set();
+
 let provider = null;
 let wallet = null;
 let token = null;
@@ -43,7 +46,8 @@ let isLive = false;
 const ERC20_ABI = [
   "function transfer(address to, uint256 amount) returns (bool)",
   "function balanceOf(address account) view returns (uint256)",
-  "function decimals() view returns (uint8)"
+  "function decimals() view returns (uint8)",
+  "event Transfer(address indexed from, address indexed to, uint256 value)"
 ];
 
 // ============ HELPERS ============
@@ -53,21 +57,55 @@ function loadClaims() {
       return JSON.parse(fs.readFileSync(CLAIMS_FILE, "utf8"));
     }
   } catch (e) {
-    console.error("Failed to load claims");
+    console.error("Failed to load claims file");
   }
   return {};
 }
 
 function saveClaims(claims) {
-  // Atomic-ish write
-  const tmp = CLAIMS_FILE + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(claims, null, 2));
-  fs.renameSync(tmp, CLAIMS_FILE);
+  try {
+    const tmp = CLAIMS_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(claims, null, 2));
+    fs.renameSync(tmp, CLAIMS_FILE);
+  } catch (e) {
+    // On Vercel this often fails (read-only FS) — that is OK because
+    // on-chain check is the real source of truth.
+    console.error("Could not persist claims.json (expected on serverless)");
+  }
 }
 
 function safeError(msg) {
-  // Never leak internal details to clients
   return { error: msg };
+}
+
+/**
+ * On-chain cooldown: has the faucet wallet sent KEKIUS to this address
+ * in the last ~24 hours?
+ */
+async function hasClaimedOnChain(toAddress) {
+  if (!isLive || !token || !wallet || !provider) return false;
+
+  try {
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, currentBlock - COOLDOWN_BLOCKS);
+
+    const filter = token.filters.Transfer(wallet.address, toAddress);
+    const events = await token.queryFilter(filter, fromBlock, currentBlock);
+
+    if (events.length === 0) return false;
+
+    // Optional: check the most recent event timestamp more precisely
+    const last = events[events.length - 1];
+    const block = await provider.getBlock(last.blockNumber);
+    if (!block || !block.timestamp) return true; // fail closed if we can't read time
+
+    const ageMs = Date.now() - block.timestamp * 1000;
+    return ageMs < COOLDOWN_MS;
+  } catch (err) {
+    console.error("On-chain cooldown check failed:", err.message);
+    // Fail CLOSED: if we cannot verify, do not allow another claim
+    return true;
+  }
 }
 
 // ============ INIT WALLET ============
@@ -77,9 +115,8 @@ async function initWallet() {
     return;
   }
 
-  // Basic sanity: private key should look like hex
   if (!/^0x[0-9a-fA-F]{64}$/.test(PRIVATE_KEY) && !/^[0-9a-fA-F]{64}$/.test(PRIVATE_KEY)) {
-    console.error("PRIVATE_KEY format looks invalid. Refusing to start live mode.");
+    console.error("PRIVATE_KEY format looks invalid. Refusing live mode.");
     return;
   }
 
@@ -109,9 +146,8 @@ app.use(cors({
   maxAge: 86400
 }));
 
-app.use(express.json({ limit: "8kb" })); // small payload only
+app.use(express.json({ limit: "8kb" }));
 
-// Serve static assets (logo, etc.) reliably
 app.use(express.static(__dirname, {
   maxAge: "1d",
   setHeaders: (res, filePath) => {
@@ -121,12 +157,10 @@ app.use(express.static(__dirname, {
   }
 }));
 
-// Explicit logo route (helps on some hosts)
 app.get("/logo.jpg", (req, res) => {
   res.sendFile(path.join(__dirname, "logo.jpg"));
 });
 
-// Global rate limit
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 40,
@@ -136,9 +170,8 @@ const globalLimiter = rateLimit({
 });
 app.use("/api/", globalLimiter);
 
-// Stricter limit on the claim endpoint
 const claimLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
+  windowMs: 60 * 60 * 1000,
   max: 8,
   message: safeError("Too many claim attempts from this IP.")
 });
@@ -146,10 +179,8 @@ const claimLimiter = rateLimit({
 // ============ ROUTES ============
 
 app.get("/api/status", async (req, res) => {
-  const claims = loadClaims();
   let pool = "unknown";
-
-  if (isLive && token) {
+  if (isLive && token && wallet) {
     try {
       const bal = await token.balanceOf(wallet.address);
       pool = ethers.formatUnits(bal, TOKEN_DECIMALS);
@@ -162,15 +193,19 @@ app.get("/api/status", async (req, res) => {
     cooldownHours: 24,
     token: TOKEN_ADDRESS,
     pool,
-    totalClaims: Object.keys(claims).length
+    cooldownSource: isLive ? "on-chain" : "file"
   });
 });
 
 app.post("/api/claim", claimLimiter, async (req, res) => {
+  const lockKey = (req.body && req.body.address)
+    ? String(req.body.address).toLowerCase()
+    : null;
+
   try {
     const { address, signature, message, fingerprint } = req.body || {};
 
-    // ---- 1. Basic input validation ----
+    // ---- 1. Input validation ----
     if (!address || typeof address !== "string" || !ethers.isAddress(address)) {
       return res.status(400).json(safeError("Invalid Ethereum address"));
     }
@@ -181,55 +216,84 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       return res.status(400).json(safeError("Invalid message"));
     }
 
-    // ---- 2. Verify signature matches address ----
+    const key = address.toLowerCase();
+
+    // Prevent concurrent double-clicks / parallel requests for same address
+    if (inflight.has(key)) {
+      return res.status(429).json(safeError("Claim already in progress for this address. Wait a moment."));
+    }
+    inflight.add(key);
+
+    // ---- 2. Verify signature ----
     let recovered;
     try {
       recovered = ethers.verifyMessage(message, signature);
     } catch {
+      inflight.delete(key);
       return res.status(400).json(safeError("Signature verification failed"));
     }
 
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
+    if (recovered.toLowerCase() !== key) {
+      inflight.delete(key);
       return res.status(400).json(safeError("Signature does not match address"));
     }
 
-    // ---- 3. Message content + anti-replay (timestamp window) ----
+    // ---- 3. Message + timestamp anti-replay ----
     if (!message.includes(address) || !message.includes("Shower")) {
+      inflight.delete(key);
       return res.status(400).json(safeError("Invalid claim message"));
     }
 
-    // Extract timestamp from message
     const tsMatch = message.match(/Timestamp:\s*(\d+)/);
     if (!tsMatch) {
+      inflight.delete(key);
       return res.status(400).json(safeError("Missing timestamp in message"));
     }
     const msgTime = parseInt(tsMatch[1], 10);
     const now = Date.now();
 
     if (isNaN(msgTime) || Math.abs(now - msgTime) > SIGNATURE_MAX_AGE_MS) {
+      inflight.delete(key);
       return res.status(400).json(safeError("Signature expired. Please try again."));
     }
 
-    // ---- 4. Per-address cooldown ----
-    const claims = loadClaims();
-    const key = address.toLowerCase();
-
-    if (claims[key] && now - claims[key].time < COOLDOWN_MS) {
-      const hoursLeft = Math.ceil((COOLDOWN_MS - (now - claims[key].time)) / 3600000);
-      return res.status(429).json(safeError(`Already claimed. Try again in ~${hoursLeft} hour(s).`));
-    }
-
-    // ---- 5. Soft device fingerprint limit ----
-    if (fingerprint && typeof fingerprint === "string") {
-      const recent = Object.values(claims).filter(
-        (c) => c.fp === fingerprint && now - c.time < COOLDOWN_MS
-      );
-      if (recent.length >= 4) {
-        return res.status(429).json(safeError("Too many claims from this device."));
+    // ---- 4. COOLDOWN (source of truth) ----
+    // LIVE → on-chain Transfer events (cannot be bypassed)
+    // DEMO → local claims file
+    if (isLive) {
+      const already = await hasClaimedOnChain(address);
+      if (already) {
+        inflight.delete(key);
+        return res.status(429).json(
+          safeError("Already claimed in the last 24 hours. One claim per address per day.")
+        );
+      }
+    } else {
+      const claims = loadClaims();
+      if (claims[key] && now - claims[key].time < COOLDOWN_MS) {
+        const hoursLeft = Math.ceil((COOLDOWN_MS - (now - claims[key].time)) / 3600000);
+        inflight.delete(key);
+        return res.status(429).json(
+          safeError(`Already claimed. Try again in ~${hoursLeft} hour(s).`)
+        );
       }
     }
 
-    // ---- 6. Send tokens (only if live) ----
+    // Soft fingerprint limit (best-effort, file may not persist on Vercel)
+    try {
+      const claims = loadClaims();
+      if (fingerprint && typeof fingerprint === "string") {
+        const recent = Object.values(claims).filter(
+          (c) => c.fp === fingerprint && now - c.time < COOLDOWN_MS
+        );
+        if (recent.length >= 4) {
+          inflight.delete(key);
+          return res.status(429).json(safeError("Too many claims from this device."));
+        }
+      }
+    } catch {}
+
+    // ---- 5. Send tokens ----
     let txHash = null;
 
     if (isLive && token && wallet) {
@@ -237,31 +301,43 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       const bal = await token.balanceOf(wallet.address);
 
       if (bal < amount) {
+        inflight.delete(key);
         return res.status(503).json(safeError("Shower is empty. Come back later."));
       }
 
-      // Extra safety: never send more than the configured amount
+      // Re-check on-chain right before send (race protection)
+      const already2 = await hasClaimedOnChain(address);
+      if (already2) {
+        inflight.delete(key);
+        return res.status(429).json(
+          safeError("Already claimed in the last 24 hours. One claim per address per day.")
+        );
+      }
+
       const tx = await token.transfer(address, amount);
       const receipt = await tx.wait(1);
       txHash = receipt.hash;
 
-      // Log only non-sensitive info
       console.log(`Claim OK → ${address.slice(0, 8)}… | ${txHash.slice(0, 12)}…`);
     } else {
-      // DEMO mode
       txHash = "0xDEMO" + crypto.randomBytes(16).toString("hex");
       console.log(`[DEMO] Claim recorded for ${address.slice(0, 8)}…`);
     }
 
-    // ---- 7. Record claim ----
-    claims[key] = {
-      time: now,
-      amount: Number(CLAIM_AMOUNT),
-      fp: fingerprint ? String(fingerprint).slice(0, 64) : null,
-      tx: txHash,
-      live: isLive
-    };
-    saveClaims(claims);
+    // ---- 6. Record claim (best-effort file cache) ----
+    try {
+      const claims = loadClaims();
+      claims[key] = {
+        time: now,
+        amount: Number(CLAIM_AMOUNT),
+        fp: fingerprint ? String(fingerprint).slice(0, 64) : null,
+        tx: txHash,
+        live: isLive
+      };
+      saveClaims(claims);
+    } catch {}
+
+    inflight.delete(key);
 
     res.json({
       success: true,
@@ -269,17 +345,16 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       txHash,
       live: isLive,
       message: isLive
-        ? `${CLAIM_AMOUNT} KEKIUS sent!`
+        ? `${CLAIM_AMOUNT} KEKIUS sent! One claim per address every 24 hours.`
         : `${CLAIM_AMOUNT} KEKIUS recorded (DEMO – no real tokens moved)`
     });
   } catch (err) {
-    // Never expose internal error details
+    if (lockKey) inflight.delete(lockKey);
     console.error("Claim error:", err.message);
     res.status(500).json(safeError("Server error. Please try again later."));
   }
 });
 
-// Catch-all for frontend
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
@@ -288,6 +363,6 @@ app.get("*", (req, res) => {
 initWallet().then(() => {
   app.listen(PORT, () => {
     console.log(`\n🐸 Shower running on http://localhost:${PORT}`);
-    console.log(`   Mode: ${isLive ? "LIVE" : "DEMO"}\n`);
+    console.log(`   Mode: ${isLive ? "LIVE (on-chain 24h cooldown)" : "DEMO"}\n`);
   });
 });
