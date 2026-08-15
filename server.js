@@ -35,11 +35,16 @@ const CLAIMS_FILE = path.join(__dirname, "claims.json");
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
 const RPC_URL = process.env.RPC_URL || "https://eth.llamarpc.com";
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
-const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, "");
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/$/, "");
+const UPSTASH_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
 
-const hasRedis = Boolean(UPSTASH_URL && UPSTASH_TOKEN);
+const hasRedis = Boolean(
+  UPSTASH_URL &&
+  UPSTASH_TOKEN &&
+  UPSTASH_URL.startsWith("https://")
+);
 const inflight = new Set();
+let lastRedisError = null;
 
 let provider = null;
 let wallet = null;
@@ -58,58 +63,71 @@ function safeError(msg) {
 }
 
 function claimKey(address) {
-  return `shower:claim:${address.toLowerCase()}`;
+  return "shower:claim:" + address.toLowerCase();
 }
 
-// ============ REDIS (Upstash REST) ============
-async function redisCommand(...args) {
+// ============ REDIS (Upstash REST API) ============
+async function redisCommand(parts) {
   if (!hasRedis) return null;
-  const res = await fetch(`${UPSTASH_URL}`, {
+
+  const res = await fetch(UPSTASH_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      Authorization: "Bearer " + UPSTASH_TOKEN,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(args)
+    body: JSON.stringify(parts)
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Redis error ${res.status}: ${text}`);
+
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    lastRedisError = "Bad Redis response (" + res.status + "): " + text.slice(0, 150);
+    throw new Error(lastRedisError);
   }
-  const data = await res.json();
+
+  if (!res.ok || data.error) {
+    lastRedisError = data.error || ("Redis HTTP " + res.status + ": " + text.slice(0, 150));
+    throw new Error(lastRedisError);
+  }
+
+  lastRedisError = null;
   return data.result;
 }
 
-/** Returns true if this address already claimed within 24h */
+async function redisPing() {
+  try {
+    const result = await redisCommand(["PING"]);
+    return { ok: true, result: result };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 async function redisHasClaimed(address) {
-  const val = await redisCommand("GET", claimKey(address));
+  const val = await redisCommand(["GET", claimKey(address)]);
   return val != null && val !== "";
 }
 
-/**
- * Reserve a claim slot (SET if Not eXists + 24h expiry).
- * Returns true if reservation succeeded (first claim).
- * Returns false if already reserved / claimed.
- */
 async function redisReserveClaim(address) {
-  // SET key value NX EX 86400
-  const result = await redisCommand(
+  const result = await redisCommand([
     "SET",
     claimKey(address),
     String(Date.now()),
     "NX",
     "EX",
-    String(COOLDOWN_SEC)
-  );
-  // Upstash returns "OK" if set, null if key already existed
+    COOLDOWN_SEC
+  ]);
   return result === "OK";
 }
 
 async function redisReleaseClaim(address) {
   try {
-    await redisCommand("DEL", claimKey(address));
+    await redisCommand(["DEL", claimKey(address)]);
   } catch (e) {
-    console.error("Failed to release claim reservation:", e.message);
+    console.error("Failed to release claim:", e.message);
   }
 }
 
@@ -214,8 +232,24 @@ app.get("/api/status", async (req, res) => {
   if (isLive && token && wallet) {
     try {
       const bal = await token.balanceOf(wallet.address);
-      pool = ethers.formatUnits(bal, TOKEN_DECIMALS);
-    } catch {}
+      let decimals = TOKEN_DECIMALS;
+      try {
+        decimals = Number(await token.decimals());
+        if (!Number.isFinite(decimals)) decimals = TOKEN_DECIMALS;
+      } catch {}
+      const formatted = ethers.formatUnits(bal, decimals);
+      // Guard against bad format results
+      pool = Number.isFinite(Number(formatted)) ? formatted : "unknown";
+    } catch (e) {
+      console.error("Status balance read failed:", e.message);
+      pool = "unknown";
+    }
+  }
+  let redis = { configured: hasRedis, ok: false, error: null };
+  if (hasRedis) {
+    redis = Object.assign({ configured: true }, await redisPing());
+  } else if (UPSTASH_URL || UPSTASH_TOKEN) {
+    redis.error = "Redis env vars present but invalid (URL must start with https://)";
   }
   res.json({
     live: isLive,
@@ -223,8 +257,8 @@ app.get("/api/status", async (req, res) => {
     cooldownHours: 24,
     token: TOKEN_ADDRESS,
     pool,
-    cooldownStore: hasRedis ? "redis" : "file-only (not reliable on Vercel)",
-    redisConfigured: hasRedis
+    cooldownStore: redis.ok ? "redis" : (hasRedis ? "redis-error" : "file-only"),
+    redis
   });
 });
 
@@ -302,7 +336,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         inflight.delete(key);
         console.error("Redis cooldown error:", e.message);
         return res.status(503).json(
-          safeError("Claim service temporarily unavailable. Try again in a minute.")
+          safeError("Redis claim store error. Check UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN on Vercel (must be the REST URL that starts with https://, not rediss://).")
         );
       }
     } else {

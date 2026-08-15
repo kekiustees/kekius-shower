@@ -432,8 +432,9 @@
         isLive = data.live;
         $("modeBadge").textContent = isLive ? "LIVE" : "DEMO";
         $("modeBadge").className = "mode-badge " + (isLive ? "mode-live" : "mode-demo");
-        if (data.pool !== "unknown") {
-          $("poolAmount").textContent = Number(data.pool).toLocaleString() + " KEKIUS";
+        const poolNum = Number(data.pool);
+        if (data.pool != null && data.pool !== "unknown" && Number.isFinite(poolNum)) {
+          $("poolAmount").textContent = poolNum.toLocaleString(undefined, { maximumFractionDigits: 2 }) + " KEKIUS";
         } else {
           $("poolAmount").textContent = isLive ? "Connected" : "Simulation";
         }
