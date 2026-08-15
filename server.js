@@ -32,9 +32,9 @@ const COOLDOWN_MS = COOLDOWN_SEC * 1000;
 const SIGNATURE_MAX_AGE_MS = 5 * 60 * 1000;
 const CLAIMS_FILE = path.join(__dirname, "claims.json");
 
-const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
-const RPC_URL = process.env.RPC_URL || "https://eth.llamarpc.com";
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+const PRIVATE_KEY = (process.env.PRIVATE_KEY || "").trim().replace(/^["']|["']$/g, "");
+const RPC_URL = (process.env.RPC_URL || "https://eth.llamarpc.com").trim().replace(/^["']|["']$/g, "");
+const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || "*").trim();
 const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/$/, "");
 const UPSTASH_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
 
@@ -168,19 +168,28 @@ function fileReserveClaim(address) {
 }
 
 // ============ INIT WALLET ============
+let initPromise = null;
+let initError = null;
+
 async function initWallet() {
-  if (!PRIVATE_KEY || PRIVATE_KEY.length < 64) {
-    console.log("⚠  No PRIVATE_KEY → DEMO mode");
-    return;
+  if (isLive && wallet && token) return true;
+  if (!PRIVATE_KEY || PRIVATE_KEY.replace(/^0x/i, "").length !== 64) {
+    initError = "No PRIVATE_KEY set (or wrong length) → DEMO mode";
+    console.log("⚠  " + initError);
+    return false;
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(PRIVATE_KEY) && !/^[0-9a-fA-F]{64}$/.test(PRIVATE_KEY)) {
-    console.error("PRIVATE_KEY format invalid");
-    return;
+  const keyBody = PRIVATE_KEY.replace(/^0x/i, "");
+  if (!/^[0-9a-fA-F]{64}$/.test(keyBody)) {
+    initError = "PRIVATE_KEY format invalid (need 64 hex chars, optional 0x)";
+    console.error(initError);
+    return false;
   }
   try {
+    const key = PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : ("0x" + PRIVATE_KEY);
     provider = new ethers.JsonRpcProvider(RPC_URL);
-    wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+    wallet = new ethers.Wallet(key, provider);
     token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, wallet);
+    // Verify RPC + key work
     const bal = await token.balanceOf(wallet.address);
     const ethBal = await provider.getBalance(wallet.address);
     console.log("✓ LIVE mode");
@@ -188,9 +197,19 @@ async function initWallet() {
     console.log("  KEKIUS :", ethers.formatUnits(bal, TOKEN_DECIMALS));
     console.log("  ETH    :", ethers.formatEther(ethBal));
     isLive = true;
+    initError = null;
+    return true;
   } catch (err) {
-    console.error("Wallet init failed:", err.message);
+    initError = "Wallet init failed: " + err.message;
+    console.error(initError);
+    isLive = false;
+    return false;
   }
+}
+
+function ensureWallet() {
+  if (!initPromise) initPromise = initWallet();
+  return initPromise;
 }
 
 // ============ MIDDLEWARE ============
@@ -228,6 +247,7 @@ const claimLimiter = rateLimit({
 
 // ============ ROUTES ============
 app.get("/api/status", async (req, res) => {
+  await ensureWallet();
   let pool = "unknown";
   if (isLive && token && wallet) {
     try {
@@ -258,11 +278,13 @@ app.get("/api/status", async (req, res) => {
     token: TOKEN_ADDRESS,
     pool,
     cooldownStore: redis.ok ? "redis" : (hasRedis ? "redis-error" : "file-only"),
-    redis
+    redis,
+    initError: isLive ? null : initError
   });
 });
 
 app.post("/api/claim", claimLimiter, async (req, res) => {
+  await ensureWallet();
   let reservedAddress = null;
   let usedRedis = false;
 
@@ -406,10 +428,18 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-initWallet().then(() => {
-  app.listen(PORT, () => {
-    console.log(`\n🐸 Drip on http://localhost:${PORT}`);
-    console.log(`   Mode: ${isLive ? "LIVE" : "DEMO"}`);
-    console.log(`   Cooldown store: ${hasRedis ? "Upstash Redis ✓" : "FILE ONLY (set Upstash for Vercel)"}\n`);
+// Kick off wallet init immediately (needed on Vercel serverless)
+ensureWallet();
+
+// Vercel uses the exported app; local uses listen()
+module.exports = app;
+
+if (require.main === module) {
+  ensureWallet().then(() => {
+    app.listen(PORT, () => {
+      console.log("\n🐸 Drip on http://localhost:" + PORT);
+      console.log("   Mode: " + (isLive ? "LIVE" : "DEMO"));
+      console.log("   Cooldown store: " + (hasRedis ? "Upstash Redis ✓" : "FILE ONLY") + "\n");
+    });
   });
-});
+}

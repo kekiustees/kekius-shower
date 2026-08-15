@@ -438,6 +438,10 @@
         } else {
           $("poolAmount").textContent = isLive ? "Connected" : "Simulation";
         }
+        // Help diagnose DEMO mode
+        if (!isLive && data.initError) {
+          console.warn("Drip not LIVE:", data.initError);
+        }
       } catch {
         $("poolAmount").textContent = "Offline";
         $("modeBadge").textContent = "OFFLINE";
