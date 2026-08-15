@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shower — Kekius Maximus</title>
+  <meta name="description" content="Shower: claim free KEKIUS. Simple. No signup. 50 tokens every 24 hours." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0e09;
+      --surface: #121810;
+      --border: #2e3c28;
+      --green: #4ade80;
+      --green-dim: #22c55e;
+      --gold: #f5c518;
+      --gold-bright: #ffe566;
+      --gold-dim: #c9a227;
+      --text: #eef5e8;
+      --muted: #8b9a7c;
+      --danger: #f87171;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 28px 16px;
+      background-image:
+        radial-gradient(ellipse at 50% 0%, rgba(245, 197, 24, 0.09) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 90%, rgba(74, 222, 128, 0.06) 0%, transparent 45%);
+    }
+
+    .container { width: 100%; max-width: 460px; }
+
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .logo-img {
+      width: 110px;
+      height: 110px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 3px solid var(--gold);
+      box-shadow: 0 0 28px rgba(245, 197, 24, 0.35);
+      margin-bottom: 18px;
+    }
+
+    .brand {
+      font-family: 'Cinzel', serif;
+      font-weight: 700;
+      font-size: 26px;
+      letter-spacing: 1.5px;
+      background: linear-gradient(135deg, var(--gold-bright), var(--gold), #e8b923);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-shadow: 0 0 40px rgba(245, 197, 24, 0.25);
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-family: 'Cinzel', serif;
+      font-size: 15px;
+      color: var(--gold-dim);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .tagline {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 26px 22px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(245, 197, 24, 0.06);
+    }
+
+    .pool {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(135deg, rgba(245, 197, 24, 0.08), rgba(74, 222, 128, 0.06));
+      border: 1px solid rgba(245, 197, 24, 0.25);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 22px;
+    }
+
+    .pool-label {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .pool-amount {
+      font-size: 19px;
+      font-weight: 700;
+      color: var(--gold);
+    }
+
+    .mode-badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .mode-live { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+    .mode-demo { background: rgba(245, 197, 24, 0.12); color: var(--gold); }
+
+    .form-group { margin-bottom: 18px; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: 7px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 13px 15px;
+      font-size: 15px;
+      color: var(--text);
+      font-family: inherit;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input[type="text"]:focus {
+      outline: none;
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px rgba(245, 197, 24, 0.12);
+    }
+
+    input[type="text"]::placeholder { color: #4a5a42; }
+
+    .captcha-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .captcha-question {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      color: var(--gold);
+      user-select: none;
+    }
+
+    .captcha-input {
+      width: 72px !important;
+      text-align: center;
+      font-size: 17px !important;
+      font-weight: 600;
+    }
+
+    .refresh-captcha {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 18px;
+      padding: 4px;
+      transition: color 0.2s;
+    }
+    .refresh-captcha:hover { color: var(--gold); }
+
+    .btn {
+      width: 100%;
+      padding: 15px;
+      border: none;
+      border-radius: 9px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--gold-dim), var(--gold), var(--gold-bright));
+      color: #1a1405;
+      box-shadow: 0 4px 18px rgba(245, 197, 24, 0.25);
+    }
+    .btn-primary:hover:not(:disabled) {
+      filter: brightness(1.08);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 22px rgba(245, 197, 24, 0.35);
+    }
+    .btn-primary:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      margin-top: 10px;
+    }
+    .btn-secondary:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    .status {
+      margin-top: 18px;
+      padding: 13px 15px;
+      border-radius: 9px;
+      font-size: 13.5px;
+      line-height: 1.55;
+      display: none;
+    }
+    .status.show { display: block; }
+    .status.success {
+      background: rgba(74, 222, 128, 0.1);
+      border: 1px solid rgba(74, 222, 128, 0.28);
+      color: var(--green);
+    }
+    .status.error {
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.28);
+      color: var(--danger);
+    }
+    .status.info {
+      background: rgba(245, 197, 24, 0.08);
+      border: 1px solid rgba(245, 197, 24, 0.22);
+      color: var(--gold);
+    }
+
+    .tx-link {
+      color: var(--gold);
+      text-decoration: underline;
+      word-break: break-all;
+    }
+
+    .how {
+      margin-top: 24px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+    }
+    .how h3 {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .how ol {
+      padding-left: 18px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    footer {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 12.5px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+    footer a { color: var(--gold-dim); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+    .contract {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      word-break: break-all;
+      margin-top: 6px;
+      opacity: 0.75;
+    }
+
+    @media (max-width: 480px) {
+      .brand { font-size: 22px; }
+      .logo-img { width: 96px; height: 96px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <img src="/logo.jpg" alt="Kekius Maximus" class="logo-img" id="logoImg"
+           onerror="this.onerror=null; this.src='logo.jpg';" />
+      <div class="brand">Kekius Maximus</div>
+      <div class="subtitle">Shower</div>
+      <p class="tagline">50 KEKIUS every 24 hours.<br>No signup. Just claim.</p>
+    </header>
+
+    <div class="card">
+      <div class="pool">
+        <div>
+          <div class="pool-label">Status</div>
+          <div class="pool-amount" id="poolAmount">—</div>
+        </div>
+        <div id="modeBadge" class="mode-badge mode-demo">DEMO</div>
+      </div>
+
+      <div class="form-group">
+        <label for="address">Your Ethereum address</label>
+        <input type="text" id="address" placeholder="0x..." spellcheck="false" autocomplete="off" />
+      </div>
+
+      <div class="form-group">
+        <label>Prove you're human</label>
+        <div class="captcha-box">
+          <span class="captcha-question" id="captchaQuestion">7 + 3 = ?</span>
+          <input type="text" class="captcha-input" id="captchaAnswer" placeholder="?" maxlength="3" />
+          <button type="button" class="refresh-captcha" id="refreshCaptcha" title="New question">↻</button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="claimBtn">Claim 50 KEKIUS</button>
+      <button class="btn btn-secondary" id="connectBtn">Connect Wallet</button>
+      <button class="btn btn-secondary" id="trustBtn" style="margin-top:8px; display:none;">Open in Trust Wallet</button>
+
+      <div class="status" id="status"></div>
+
+      <div class="how">
+        <h3>How it works</h3>
+        <ol>
+          <li>Connect Trust Wallet / MetaMask (or paste an address you control)</li>
+          <li>Solve the CAPTCHA</li>
+          <li>Sign a message proving ownership (stops IP rotation + address spam)</li>
+          <li>Receive 50 KEKIUS. One claim per address per 24 hours.</li>
+        </ol>
+      </div>
+    </div>
+
+    <footer>
+      <p>Inspired by the original 2010 Bitcoin faucet</p>
+      <p>Token: Kekius Maximus (KEKIUS)</p>
+      <p class="contract">0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78</p>
+      <p style="margin-top: 10px;">
+        <a href="https://etherscan.io/token/0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78" target="_blank" rel="noopener">Etherscan</a>
+      </p>
+    </footer>
+  </div>
+
+  <script>
+    const CLAIM_AMOUNT = 50;
+    const API_BASE = "";
+
+    let captchaA = 0, captchaB = 0;
+    let provider = null;
+    let signer = null;
+    let isLive = false;
+
+    function $(id) { return document.getElementById(id); }
+
+    function showStatus(msg, type = "info") {
+      const el = $("status");
+      el.className = `status show ${type}`;
+      el.innerHTML = msg;
+    }
+
+    function hideStatus() {
+      $("status").className = "status";
+    }
+
+    function isValidAddress(addr) {
+      try { return ethers.isAddress(addr); } catch { return false; }
+    }
+
+    async function getFingerprint() {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      canvas.width = 200; canvas.height = 50;
+      ctx.textBaseline = "top";
+      ctx.font = "14px Arial";
+      ctx.fillStyle = "#f5c518";
+      ctx.fillText("Shower🐸", 2, 2);
+      const dataUrl = canvas.toDataURL();
+      const signals = [
+        navigator.userAgent, navigator.language,
+        screen.width + "x" + screen.height,
+        new Date().getTimezoneOffset(),
+        dataUrl.slice(-40)
+      ].join("|");
+      let hash = 0;
+      for (let i = 0; i < signals.length; i++) {
+        hash = ((hash << 5) - hash) + signals.charCodeAt(i);
+        hash |= 0;
+      }
+      return "fp_" + Math.abs(hash).toString(16);
+    }
+
+    function newCaptcha() {
+      captchaA = Math.floor(Math.random() * 12) + 1;
+      captchaB = Math.floor(Math.random() * 12) + 1;
+      $("captchaQuestion").textContent = `${captchaA} + ${captchaB} = ?`;
+      $("captchaAnswer").value = "";
+    }
+
+    async function loadStatus() {
+      try {
+        const res = await fetch(API_BASE + "/api/status");
+        const data = await res.json();
+        isLive = data.live;
+        $("modeBadge").textContent = isLive ? "LIVE" : "DEMO";
+        $("modeBadge").className = "mode-badge " + (isLive ? "mode-live" : "mode-demo");
+        if (data.pool !== "unknown") {
+          $("poolAmount").textContent = Number(data.pool).toLocaleString() + " KEKIUS";
+        } else {
+          $("poolAmount").textContent = isLive ? "Connected" : "Simulation";
+        }
+      } catch {
+        $("poolAmount").textContent = "Offline";
+        $("modeBadge").textContent = "OFFLINE";
+      }
+    }
+
+    function getInjectedProvider() {
+      // Prefer Trust Wallet / MetaMask when multiple wallets are injected
+      if (window.ethereum) {
+        if (window.ethereum.providers && Array.isArray(window.ethereum.providers)) {
+          const trust = window.ethereum.providers.find(p => p.isTrust || p.isTrustWallet);
+          const meta = window.ethereum.providers.find(p => p.isMetaMask);
+          return trust || meta || window.ethereum.providers[0] || window.ethereum;
+        }
+        return window.ethereum;
+      }
+      // Some older Trust Wallet builds
+      if (window.trustwallet) return window.trustwallet;
+      return null;
+    }
+
+    function isMobile() {
+      return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    }
+
+    function openInTrustWallet() {
+      // Deep link: opens this page inside Trust Wallet's in-app browser
+      const url = encodeURIComponent(window.location.href);
+      const deepLink = `https://link.trustwallet.com/open_url?coin_id=60&url=${url}`;
+      window.location.href = deepLink;
+    }
+
+    async function connectWallet() {
+      const injected = getInjectedProvider();
+
+      if (!injected) {
+        if (isMobile()) {
+          showStatus(
+            "No wallet detected. Tap <strong>Open in Trust Wallet</strong> below, or paste your address.",
+            "info"
+          );
+          $("trustBtn").style.display = "block";
+          return;
+        }
+        showStatus(
+          "No wallet found. Install <a href='https://trustwallet.com' target='_blank' style='color:inherit;text-decoration:underline'>Trust Wallet</a> or MetaMask, or paste an address you control.",
+          "error"
+        );
+        $("trustBtn").style.display = "block";
+        return;
+      }
+
+      try {
+        provider = new ethers.BrowserProvider(injected);
+        await provider.send("eth_requestAccounts", []);
+        signer = await provider.getSigner();
+        const address = await signer.getAddress();
+        $("address").value = address;
+
+        const name = injected.isTrust || injected.isTrustWallet
+          ? "Trust Wallet"
+          : injected.isMetaMask
+            ? "MetaMask"
+            : "Wallet";
+
+        showStatus(`${name} connected: ${address.slice(0, 6)}…${address.slice(-4)}`, "success");
+        $("trustBtn").style.display = "none";
+      } catch (err) {
+        console.error(err);
+        showStatus("Connection rejected or failed. Try again or paste your address.", "error");
+        if (isMobile()) $("trustBtn").style.display = "block";
+      }
+    }
+
+    async function claimTokens() {
+      hideStatus();
+      const address = $("address").value.trim();
+      const answer = parseInt($("captchaAnswer").value, 10);
+
+      if (!isValidAddress(address)) {
+        showStatus("Enter a valid Ethereum address (0x…).", "error");
+        return;
+      }
+      if (isNaN(answer) || answer !== captchaA + captchaB) {
+        showStatus("Wrong CAPTCHA. Try again.", "error");
+        newCaptcha();
+        return;
+      }
+
+      if (!signer) {
+        if (window.ethereum) {
+          await connectWallet();
+          if (!signer) {
+            showStatus("You must connect a wallet and sign to claim. This stops IP rotation abuse.", "error");
+            return;
+          }
+        } else {
+          showStatus("Connect a wallet (MetaMask etc.) so you can sign and prove ownership of the address.", "error");
+          return;
+        }
+      }
+
+      const connected = await signer.getAddress();
+      if (connected.toLowerCase() !== address.toLowerCase()) {
+        showStatus("Connected wallet does not match the address field. Update the address or reconnect.", "error");
+        return;
+      }
+
+      $("claimBtn").disabled = true;
+      $("claimBtn").textContent = "Sign & Claim…";
+
+      try {
+        const timestamp = Date.now();
+        const message = `Kekius Maximus Shower\nAddress: ${address}\nAmount: ${CLAIM_AMOUNT} KEKIUS\nTimestamp: ${timestamp}`;
+        const signature = await signer.signMessage(message);
+        const fingerprint = await getFingerprint();
+
+        showStatus("Signature received. Submitting claim…", "info");
+
+        const res = await fetch(API_BASE + "/api/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address, signature, message, fingerprint })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showStatus(data.error || "Claim failed", "error");
+          newCaptcha();
+          return;
+        }
+
+        const txLink = data.live && data.txHash && !data.txHash.startsWith("0xDEMO")
+          ? `<br><a class="tx-link" href="https://etherscan.io/tx/${data.txHash}" target="_blank">${data.txHash.slice(0, 18)}…</a>`
+          : `<br><small style="opacity:0.7">Demo tx: ${data.txHash}</small>`;
+
+        showStatus(
+          `<strong>${data.amount} KEKIUS</strong> claimed for<br>` +
+          `<code>${address.slice(0, 10)}…${address.slice(-8)}</code>${txLink}<br>` +
+          `<small>${data.message}</small>`,
+          "success"
+        );
+
+        newCaptcha();
+        loadStatus();
+      } catch (err) {
+        console.error(err);
+        showStatus(err.message || "Claim cancelled or failed", "error");
+      } finally {
+        $("claimBtn").disabled = false;
+        $("claimBtn").textContent = "Claim 50 KEKIUS";
+      }
+    }
+
+    function init() {
+      newCaptcha();
+      loadStatus();
+
+      $("refreshCaptcha").addEventListener("click", newCaptcha);
+      $("claimBtn").addEventListener("click", claimTokens);
+      $("connectBtn").addEventListener("click", connectWallet);
+      $("trustBtn").addEventListener("click", openInTrustWallet);
+
+      // Show Trust Wallet button on mobile by default
+      if (isMobile() && !getInjectedProvider()) {
+        $("trustBtn").style.display = "block";
+      }
+
+      $("captchaAnswer").addEventListener("keydown", e => { if (e.key === "Enter") claimTokens(); });
+      $("address").addEventListener("keydown", e => { if (e.key === "Enter") $("captchaAnswer").focus(); });
+    }
+
+    init();
+  </script>
+</body>
+</html>

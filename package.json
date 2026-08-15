@@ -1,0 +1,17 @@
+{
+  "name": "kekius-shower",
+  "version": "1.0.0",
+  "description": "Kekius Maximus Shower – simple claim tool inspired by the original Bitcoin faucet",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0"
+  }
+}
