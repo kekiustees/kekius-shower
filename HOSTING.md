@@ -1,4 +1,4 @@
-# How to Host Shower on GitHub + Vercel
+# How to Host Drip on GitHub + Vercel
 
 Follow these steps carefully. This keeps your private key safe.
 
@@ -9,7 +9,7 @@ Follow these steps carefully. This keeps your private key safe.
 ### 1. Create a new GitHub repository
 1. Go to [github.com](https://github.com) and log in.
 2. Click the **+** button (top right) → **New repository**.
-3. Name it something like `kekius-shower`.
+3. Name it something like `kekius-drip`.
 4. Make it **Public** or **Private** (your choice).
 5. **Do NOT** check “Add a README” (we already have files).
 6. Click **Create repository**.
@@ -20,9 +20,9 @@ On your computer, open a terminal in the `kekius-faucet` folder and run:
 ```bash
 git init
 git add .
-git commit -m "Initial Shower claim tool"
+git commit -m "Initial Drip claim tool"
 git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/kekius-shower.git
+git remote add origin https://github.com/YOUR_USERNAME/kekius-drip.git
 git push -u origin main
 ```
 
@@ -42,7 +42,7 @@ Never put your private key in any file that gets uploaded.
 
 ### 2. Import the project
 1. In Vercel, click **Add New…** → **Project**.
-2. Find your `kekius-shower` repository and click **Import**.
+2. Find your `kekius-drip` repository and click **Import**.
 3. Leave the settings as they are (Framework Preset can stay “Other”).
 4. Click **Deploy**.
 
@@ -73,14 +73,14 @@ After redeploy, the site will switch to **LIVE** mode if the key and RPC are cor
 ## Part 3 — Security checklist (very important)
 
 ### Protect the private key
-- Use a **brand new wallet** only for the Shower.
+- Use a **brand new wallet** only for the Drip.
 - Put only a small amount of KEKIUS + a little ETH (for gas) in it.
 - Never put the private key in the frontend or in any GitHub file.
 - Only store it in Vercel Environment Variables.
 
 ### Recommended settings
 - Set `ALLOWED_ORIGIN` in Vercel env vars to your real domain  
-  (example: `https://kekius-shower.vercel.app`) so only your site can call the API.
+  (example: `https://kekius-drip.vercel.app`) so only your site can call the API.
 - Keep the claim amount low (currently 50 KEKIUS).
 - Check the Vercel logs occasionally for unusual activity.
 
@@ -95,7 +95,7 @@ After redeploy, the site will switch to **LIVE** mode if the key and RPC are cor
 
 ## Part 4 — Test it
 
-1. Visit your Vercel URL (example: `https://kekius-shower.vercel.app`).
+1. Visit your Vercel URL (example: `https://kekius-drip.vercel.app`).
 2. Connect MetaMask.
 3. Solve the CAPTCHA.
 4. Click **Claim 50 KEKIUS**.
@@ -121,4 +121,4 @@ After redeploy, the site will switch to **LIVE** mode if the key and RPC are cor
 - You can always withdraw leftover tokens later.
 - For higher security later you can move the backend to Railway or a small VPS, but Vercel is fine for starting.
 
-That’s it. Your Shower is now live and reasonably protected.
+That’s it. Your Drip is now live and reasonably protected.

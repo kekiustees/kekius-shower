@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Shower — Kekius Maximus</title>
-  <meta name="description" content="Shower: claim free KEKIUS. Simple. No signup. 50 tokens every 24 hours." />
+  <title>Drip — Kekius Maximus</title>
+  <meta name="description" content="Drip: claim free KEKIUS. Simple. No signup. 50 tokens every 24 hours." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -316,7 +316,7 @@
       <img src="/logo.jpg" alt="Kekius Maximus" class="logo-img" id="logoImg"
            onerror="this.onerror=null; this.src='logo.jpg';" />
       <div class="brand">Kekius Maximus</div>
-      <div class="subtitle">Shower</div>
+      <div class="subtitle">Drip</div>
       <p class="tagline">50 KEKIUS every 24 hours.<br>No signup. Just claim.</p>
     </header>
 
@@ -402,7 +402,7 @@
       ctx.textBaseline = "top";
       ctx.font = "14px Arial";
       ctx.fillStyle = "#f5c518";
-      ctx.fillText("Shower🐸", 2, 2);
+      ctx.fillText("Drip🐸", 2, 2);
       const dataUrl = canvas.toDataURL();
       const signals = [
         navigator.userAgent, navigator.language,
@@ -551,7 +551,7 @@
 
       try {
         const timestamp = Date.now();
-        const message = `Kekius Maximus Shower\nAddress: ${address}\nAmount: ${CLAIM_AMOUNT} KEKIUS\nTimestamp: ${timestamp}`;
+        const message = `Kekius Maximus Drip\nAddress: ${address}\nAmount: ${CLAIM_AMOUNT} KEKIUS\nTimestamp: ${timestamp}`;
         const signature = await signer.signMessage(message);
         const fingerprint = await getFingerprint();
 

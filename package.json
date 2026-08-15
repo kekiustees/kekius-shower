@@ -1,7 +1,7 @@
 {
-  "name": "kekius-shower",
+  "name": "kekius-drip",
   "version": "1.0.0",
-  "description": "Kekius Maximus Shower – simple claim tool inspired by the original Bitcoin faucet",
+  "description": "Kekius Maximus Drip – simple claim tool inspired by the original Bitcoin faucet",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

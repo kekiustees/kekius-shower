@@ -1,5 +1,5 @@
 /**
- * Kekius Maximus – Shower Backend
+ * Kekius Maximus – Drip Backend
  * --------------------------------
  * ONE claim per address every 24 hours.
  *
@@ -63,7 +63,7 @@ function safeError(msg) {
 }
 
 function claimKey(address) {
-  return "shower:claim:" + address.toLowerCase();
+  return "drip:claim:" + address.toLowerCase();
 }
 
 // ============ REDIS (Upstash REST API) ============
@@ -298,7 +298,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       inflight.delete(key);
       return res.status(400).json(safeError("Signature does not match address"));
     }
-    if (!message.includes(address) || !message.includes("Shower")) {
+    if (!message.includes(address) || !message.includes("Drip")) {
       inflight.delete(key);
       return res.status(400).json(safeError("Invalid claim message"));
     }
@@ -359,7 +359,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       if (bal < amount) {
         if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
         inflight.delete(key);
-        return res.status(503).json(safeError("Shower is empty. Come back later."));
+        return res.status(503).json(safeError("Drip is empty. Come back later."));
       }
 
       try {
@@ -408,7 +408,7 @@ app.get("*", (req, res) => {
 
 initWallet().then(() => {
   app.listen(PORT, () => {
-    console.log(`\n🐸 Shower on http://localhost:${PORT}`);
+    console.log(`\n🐸 Drip on http://localhost:${PORT}`);
     console.log(`   Mode: ${isLive ? "LIVE" : "DEMO"}`);
     console.log(`   Cooldown store: ${hasRedis ? "Upstash Redis ✓" : "FILE ONLY (set Upstash for Vercel)"}\n`);
   });

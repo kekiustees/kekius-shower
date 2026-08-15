@@ -1,4 +1,4 @@
-# Kekius Maximus — Shower
+# Kekius Maximus — Drip
 
 A simple claim tool in the spirit of the original 2010 Bitcoin faucet.
 
