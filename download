@@ -1,0 +1,22 @@
+# Secrets - NEVER commit these
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+claims.json
+*.log
+
+# Dependencies
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build / temp
+.vercel
+dist/
+tmp/
