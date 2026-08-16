@@ -173,42 +173,70 @@ let initError = null;
 
 async function initWallet() {
   if (isLive && wallet && token) return true;
-  if (!PRIVATE_KEY || PRIVATE_KEY.replace(/^0x/i, "").length !== 64) {
-    initError = "No PRIVATE_KEY set (or wrong length) → DEMO mode";
+
+  // Strip 0x and measure hex length
+  const keyBody = (PRIVATE_KEY || "").replace(/^0x/i, "").trim();
+  if (!keyBody || keyBody.length !== 64) {
+    initError =
+      "PRIVATE_KEY missing or wrong length on the server. " +
+      "In Vercel → Settings → Environment Variables, add PRIVATE_KEY " +
+      "(64 hex characters, with or without 0x), set it for Production, then Redeploy.";
     console.log("⚠  " + initError);
     return false;
   }
-  const keyBody = PRIVATE_KEY.replace(/^0x/i, "");
   if (!/^[0-9a-fA-F]{64}$/.test(keyBody)) {
-    initError = "PRIVATE_KEY format invalid (need 64 hex chars, optional 0x)";
+    initError =
+      "PRIVATE_KEY has invalid characters. Use only 0-9 and a-f (64 chars). No spaces or quotes.";
     console.error(initError);
     return false;
   }
+
   try {
-    const key = PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : ("0x" + PRIVATE_KEY);
-    provider = new ethers.JsonRpcProvider(RPC_URL);
+    const key = "0x" + keyBody;
+    provider = new ethers.JsonRpcProvider(RPC_URL, undefined, {
+      staticNetwork: true
+    });
     wallet = new ethers.Wallet(key, provider);
     token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, wallet);
-    // Verify RPC + key work
-    const bal = await token.balanceOf(wallet.address);
-    const ethBal = await provider.getBalance(wallet.address);
-    console.log("✓ LIVE mode");
-    console.log("  Wallet :", wallet.address);
-    console.log("  KEKIUS :", ethers.formatUnits(bal, TOKEN_DECIMALS));
-    console.log("  ETH    :", ethers.formatEther(ethBal));
+
+    // LIVE as soon as wallet is constructed with a valid key
     isLive = true;
     initError = null;
+    console.log("✓ LIVE mode enabled");
+    console.log("  Wallet :", wallet.address);
+    console.log("  RPC    :", RPC_URL.slice(0, 40) + "...");
+
+    // Best-effort balance log (RPC failure should NOT force DEMO)
+    try {
+      const bal = await Promise.race([
+        token.balanceOf(wallet.address),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("balance timeout")), 8000))
+      ]);
+      console.log("  KEKIUS :", ethers.formatUnits(bal, TOKEN_DECIMALS));
+    } catch (balErr) {
+      console.warn("Balance check skipped:", balErr.message);
+    }
+
     return true;
   } catch (err) {
     initError = "Wallet init failed: " + err.message;
     console.error(initError);
     isLive = false;
+    wallet = null;
+    token = null;
+    provider = null;
     return false;
   }
 }
 
 function ensureWallet() {
-  if (!initPromise) initPromise = initWallet();
+  // Retry later if a previous attempt failed (cold start / flaky RPC)
+  if (isLive && wallet && token) return Promise.resolve(true);
+  if (initPromise) return initPromise;
+  initPromise = initWallet().then((ok) => {
+    if (!ok) initPromise = null; // allow next request to retry
+    return ok;
+  });
   return initPromise;
 }
 
