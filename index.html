@@ -418,6 +418,31 @@
       return "fp_" + Math.abs(hash).toString(16);
     }
 
+    const COOLDOWN_MS_CLIENT = 24 * 60 * 60 * 1000;
+
+    function hasLocalCooldown() {
+      try {
+        if (document.cookie.split(";").some(c => c.trim().startsWith("drip_claimed=1"))) {
+          return true;
+        }
+        const t = localStorage.getItem("drip_claim_at");
+        if (t && Date.now() - Number(t) < COOLDOWN_MS_CLIENT) return true;
+      } catch {}
+      return false;
+    }
+
+    function setLocalCooldown() {
+      try {
+        localStorage.setItem("drip_claim_at", String(Date.now()));
+        document.cookie = "drip_claimed=1; path=/; max-age=86400; SameSite=Lax";
+      } catch {}
+    }
+
+    function lockClaimButton(reason) {
+      $("claimBtn").disabled = true;
+      $("claimBtn").textContent = reason || "Already claimed (24h cooldown)";
+    }
+
     function newCaptcha() {
       captchaA = Math.floor(Math.random() * 12) + 1;
       captchaB = Math.floor(Math.random() * 12) + 1;
@@ -438,21 +463,29 @@
         } else {
           $("poolAmount").textContent = isLive ? "Connected" : "Simulation";
         }
-        if (!isLive && data.initError) {
-          console.warn("Drip not LIVE:", data.initError);
-          // Show a short hint under the status area once
-          const hintId = "demoHint";
-          let hint = document.getElementById(hintId);
+        const hintId = "demoHint";
+        let hint = document.getElementById(hintId);
+        if (!isLive) {
+          console.warn("Drip not LIVE:", data.initError, data.debug);
           if (!hint) {
             hint = document.createElement("div");
             hint.id = hintId;
-            hint.style.cssText = "margin-top:10px;font-size:12px;color:#f87171;line-height:1.4;";
+            hint.style.cssText = "margin-top:12px;padding:12px;border-radius:10px;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.35);font-size:12px;color:#fecaca;line-height:1.5;";
             $("status").parentNode.insertBefore(hint, $("status"));
           }
-          hint.textContent = "DEMO mode: " + data.initError;
-        } else {
-          const hint = document.getElementById("demoHint");
-          if (hint) hint.remove();
+          const d = data.debug || {};
+          let why = data.initError || "PRIVATE_KEY not loaded on the server.";
+          let fix = "";
+          if (!d.privateKeyPresent) {
+            fix = "Fix: Vercel → Settings → Environment Variables → add PRIVATE_KEY for Production → Redeploy.";
+          } else if (!d.privateKeyLooksValid) {
+            fix = "Fix: PRIVATE_KEY length is " + d.privateKeyHexLength + " (need exactly 64 hex chars). Remove quotes/spaces and Redeploy.";
+          } else {
+            fix = "Fix: key looks present but wallet did not start. Check RPC_URL and Vercel function logs, then Redeploy.";
+          }
+          hint.innerHTML = "<strong>DEMO / Simulation</strong> — no real tokens will send.<br>" + why + "<br><br>" + fix;
+        } else if (hint) {
+          hint.remove();
         }
       } catch {
         $("poolAmount").textContent = "Offline";
@@ -530,6 +563,11 @@
 
     async function claimTokens() {
       hideStatus();
+      if (hasLocalCooldown()) {
+        lockClaimButton("Already claimed (24h cooldown)");
+        showStatus("This browser already claimed in the last 24 hours. One claim per person per day.", "error");
+        return;
+      }
       const address = $("address").value.trim();
       const answer = parseInt($("captchaAnswer").value, 10);
 
@@ -598,9 +636,8 @@
           "success"
         );
 
-        // Lock UI for this session after a successful claim
-        $("claimBtn").disabled = true;
-        $("claimBtn").textContent = "Already claimed (24h cooldown)";
+        setLocalCooldown();
+        lockClaimButton("Already claimed (24h cooldown)");
         newCaptcha();
         loadStatus();
         return;
@@ -618,6 +655,9 @@
     function init() {
       newCaptcha();
       loadStatus();
+      if (hasLocalCooldown()) {
+        lockClaimButton("Already claimed (24h cooldown)");
+      }
 
       $("refreshCaptcha").addEventListener("click", newCaptcha);
       $("claimBtn").addEventListener("click", claimTokens);

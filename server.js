@@ -21,6 +21,7 @@ const path = require("path");
 const crypto = require("crypto");
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // ============ CONFIG ============
@@ -129,6 +130,80 @@ async function redisReleaseClaim(address) {
   } catch (e) {
     console.error("Failed to release claim:", e.message);
   }
+}
+
+function fpKey(fp) {
+  return "drip:fp:" + String(fp).slice(0, 80);
+}
+function ipKey(ip) {
+  return "drip:ip:" + String(ip).slice(0, 64);
+}
+
+/** Max 1 claim per device fingerprint / 24h */
+async function redisReserveFingerprint(fp) {
+  if (!fp || typeof fp !== "string" || fp.length < 4) return true; // skip if missing
+  const result = await redisCommand([
+    "SET", fpKey(fp), String(Date.now()), "NX", "EX", COOLDOWN_SEC
+  ]);
+  return result === "OK";
+}
+
+async function redisReleaseFingerprint(fp) {
+  if (!fp) return;
+  try { await redisCommand(["DEL", fpKey(fp)]); } catch {}
+}
+
+/** Max claims per IP / 24h (default 2) */
+const MAX_CLAIMS_PER_IP = 1;
+async function redisCheckAndIncrIp(ip) {
+  if (!ip || ip === "unknown") return true;
+  const k = ipKey(ip);
+  const count = await redisCommand(["GET", k]);
+  const n = count ? parseInt(count, 10) : 0;
+  if (n >= MAX_CLAIMS_PER_IP) return false;
+  // INCR + set expiry on first claim
+  const next = await redisCommand(["INCR", k]);
+  if (Number(next) === 1) {
+    await redisCommand(["EXPIRE", k, COOLDOWN_SEC]);
+  }
+  if (Number(next) > MAX_CLAIMS_PER_IP) {
+    // roll back
+    try { await redisCommand(["DECR", k]); } catch {}
+    return false;
+  }
+  return true;
+}
+
+async function redisDecrIp(ip) {
+  if (!ip || ip === "unknown") return;
+  try {
+    const n = await redisCommand(["DECR", ipKey(ip)]);
+    if (Number(n) < 0) await redisCommand(["SET", ipKey(ip), "0", "EX", COOLDOWN_SEC]);
+  } catch {}
+}
+
+function clientIp(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length) return xf.split(",")[0].trim();
+  return req.ip || req.socket?.remoteAddress || "unknown";
+}
+
+function readCookie(req, name) {
+  const raw = req.headers.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  for (const p of parts) {
+    if (p.startsWith(name + "=")) return decodeURIComponent(p.slice(name.length + 1));
+  }
+  return null;
+}
+
+function setClaimCookie(res) {
+  // 24h browser cookie — easy to clear, but stops casual re-claims
+  const maxAge = COOLDOWN_SEC;
+  res.setHeader(
+    "Set-Cookie",
+    "drip_claimed=1; Path=/; Max-Age=" + maxAge + "; SameSite=Lax; Secure"
+  );
 }
 
 // ============ FILE FALLBACK (local/demo only) ============
@@ -299,6 +374,7 @@ app.get("/api/status", async (req, res) => {
   } else if (UPSTASH_URL || UPSTASH_TOKEN) {
     redis.error = "Redis env vars present but invalid (URL must start with https://)";
   }
+  const keyBody = (PRIVATE_KEY || "").replace(/^0x/i, "").trim();
   res.json({
     live: isLive,
     claimAmount: Number(CLAIM_AMOUNT),
@@ -307,7 +383,16 @@ app.get("/api/status", async (req, res) => {
     pool,
     cooldownStore: redis.ok ? "redis" : (hasRedis ? "redis-error" : "file-only"),
     redis,
-    initError: isLive ? null : initError
+    initError: isLive ? null : initError,
+    // Safe diagnostics (never returns the actual key)
+    debug: {
+      privateKeyPresent: keyBody.length > 0,
+      privateKeyHexLength: keyBody.length,
+      privateKeyLooksValid: keyBody.length === 64 && /^[0-9a-fA-F]+$/.test(keyBody),
+      rpcUrlSet: Boolean(RPC_URL),
+      rpcUrlPreview: RPC_URL ? (RPC_URL.slice(0, 32) + "…") : null,
+      walletAddress: wallet ? wallet.address : null
+    }
   });
 });
 
@@ -363,10 +448,30 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       return res.status(400).json(safeError("Signature expired. Please try again."));
     }
 
-    // ---- COOLDOWN: reserve slot BEFORE sending tokens ----
+    // ---- Browser cookie check (soft barrier) ----
+    if (readCookie(req, "drip_claimed") === "1") {
+      inflight.delete(key);
+      return res.status(429).json(
+        safeError("This browser already claimed in the last 24 hours. One claim per person per day.")
+      );
+    }
+
+    const ip = clientIp(req);
+    let reservedFp = null;
+    let reservedIp = false;
+
+    // ---- COOLDOWN: Redis is REQUIRED for LIVE (cannot be bypassed on Vercel) ----
+    if (isLive && !hasRedis) {
+      inflight.delete(key);
+      return res.status(503).json(
+        safeError("Claim store not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.")
+      );
+    }
+
     if (hasRedis) {
       usedRedis = true;
       try {
+        // 1) Per-address 24h
         const already = await redisHasClaimed(address);
         if (already) {
           inflight.delete(key);
@@ -382,6 +487,31 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
           );
         }
         reservedAddress = address;
+
+        // 2) Per-device fingerprint 24h (stops multi-wallet from same browser)
+        if (fingerprint && typeof fingerprint === "string") {
+          const fpOk = await redisReserveFingerprint(fingerprint);
+          if (!fpOk) {
+            await redisReleaseClaim(address);
+            inflight.delete(key);
+            return res.status(429).json(
+              safeError("This device already claimed in the last 24 hours. One claim per person per day.")
+            );
+          }
+          reservedFp = fingerprint;
+        }
+
+        // 3) Per-IP limit (default 2 / 24h)
+        const ipOk = await redisCheckAndIncrIp(ip);
+        if (!ipOk) {
+          await redisReleaseClaim(address);
+          if (reservedFp) await redisReleaseFingerprint(reservedFp);
+          inflight.delete(key);
+          return res.status(429).json(
+            safeError("This network already claimed in the last 24 hours. One claim per IP per day.")
+          );
+        }
+        reservedIp = true;
       } catch (e) {
         inflight.delete(key);
         console.error("Redis cooldown error:", e.message);
@@ -390,7 +520,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         );
       }
     } else {
-      // File fallback — NOT reliable on Vercel
+      // DEMO / local only — file fallback
       console.warn("No Redis configured — cooldown may not work on serverless");
       if (fileHasClaimed(address) || !fileReserveClaim(address)) {
         inflight.delete(key);
@@ -408,6 +538,8 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       const bal = await token.balanceOf(wallet.address);
       if (bal < amount) {
         if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+        if (usedRedis && reservedIp) await redisDecrIp(ip);
         inflight.delete(key);
         return res.status(503).json(safeError("Drip is empty. Come back later."));
       }
@@ -418,8 +550,9 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         txHash = receipt.hash;
         console.log(`Claim OK → ${address.slice(0, 8)}… | ${txHash.slice(0, 12)}…`);
       } catch (sendErr) {
-        // Transfer failed — release reservation so user can retry
         if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+        if (usedRedis && reservedIp) await redisDecrIp(ip);
         inflight.delete(key);
         console.error("Transfer failed:", sendErr.message);
         return res.status(500).json(safeError("Token transfer failed. Please try again."));
@@ -430,6 +563,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     }
 
     inflight.delete(key);
+    setClaimCookie(res);
 
     res.json({
       success: true,
