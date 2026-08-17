@@ -67,6 +67,33 @@ function claimKey(address) {
   return "drip:claim:" + address.toLowerCase();
 }
 
+// ============ BANNED WALLETS ============
+// Permanently blocked from claiming (address + signer checked)
+const BANNED_ADDRESSES = new Set([
+  "0xe9ba2241261e843d550e47882e262c76e27db1f5",
+  "0x81463a7d99933a2cebf8661e80fd17b7c6ec246d",
+  "0xb60ae4eb3c0f4267ef61186aa3bd71f047202772",
+  "0x914a81b744781c87adfc99b1dc366bc22bc81d50",
+  "0x0095c6b81e98d84d6ae1d5559ec4cd9d5056319d",
+  "0x0aeae5bb5eabe9aaedbd450dbef9e28fdb2a6b0a",
+  "0xa862eb6262a78b7c77d38ea5181cddced9a612ef",
+  "0x18387589ea66e7195be0d16784ead78a8b88611f",
+  "0xc9eb6bfb0cea4f95d606583123cf6294601080ea",
+  "0xb1d76699a11f961dec76444335ae8182d39d4821",
+  "0xb6b81747fb69f5c08643f41722b85f0f0ac30f8a",
+  "0xff91da76d3b5e51278c00b1c6ab259575c076532",
+  "0x393f21e015a0f8dc341746eb49e54d84081b76ce"
+].map((a) => a.toLowerCase()));
+
+function isBanned(address) {
+  try {
+    return BANNED_ADDRESSES.has(String(address).toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+
 // ============ REDIS (Upstash REST API) ============
 async function redisCommand(parts) {
   if (!hasRedis) return null;
@@ -407,6 +434,9 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     if (!address || typeof address !== "string" || !ethers.isAddress(address)) {
       return res.status(400).json(safeError("Invalid Ethereum address"));
     }
+    if (isBanned(address)) {
+      return res.status(403).json(safeError("This wallet is banned from Drip."));
+    }
     if (!signature || typeof signature !== "string" || signature.length > 200) {
       return res.status(400).json(safeError("Invalid signature"));
     }
@@ -432,6 +462,10 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     if (recovered.toLowerCase() !== key) {
       inflight.delete(key);
       return res.status(400).json(safeError("Signature does not match address"));
+    }
+    if (isBanned(recovered)) {
+      inflight.delete(key);
+      return res.status(403).json(safeError("This wallet is banned from Drip."));
     }
     if (!message.includes(address) || !message.includes("Drip")) {
       inflight.delete(key);
