@@ -26,7 +26,7 @@ const PORT = process.env.PORT || 3000;
 
 // ============ CONFIG ============
 const TOKEN_ADDRESS = "0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78";
-const CLAIM_AMOUNT = 25n; // HARD LOCK 25
+const CLAIM_AMOUNT = 25n; // HARD LOCK 25 — never 50
 const TOKEN_DECIMALS = 9;
 const COOLDOWN_SEC = 24 * 60 * 60; // 24 hours in seconds (for Redis TTL)
 const COOLDOWN_MS = COOLDOWN_SEC * 1000;
@@ -170,7 +170,18 @@ const BANNED_ADDRESSES = new Set([
   "0x0ef02ecf434a6514c8db71caf69f75a83d1aa0ed",
   "0xe388f8b0db2afa273b1fdd886a7218682a30bf7b",
   "0x48c998026c7a2a3084d2c9f967f81eeda41b404d",
-  "0x7025f1d1bddcf7f0fbac9429204c6c3c7ec1b5fb"
+  "0x7025f1d1bddcf7f0fbac9429204c6c3c7ec1b5fb",
+  "0x6747bcaf9bd5a5f0758cbe08903490e45ddfacb5",
+  "0xf0c4502bf18eac5fad1787e67cc85726b023191e",
+  "0xf04fcfcdf97c0af5332e6f9b28ada3914078ef66",
+  "0xfe77d05f80765571af809c221f821d5c98d47818",
+  "0x791996739bd788dc637d4d534cafbd3c161192c9",
+  "0xcb91bacd33a7a39f1786a2ec7a1a183aa73d7850",
+  "0x5ddc62d53752a04b046cc2edec62920659b645bb",
+  "0x6aa1ebfce1ed2d974d0e2d5aedcd8ce475435aa3",
+  "0x83e0d2e8a30cea088d3c680484a6e314cfd14061",
+  "0xed1a6f54860c52c0c704efbd7e6c5ac8608aa94b",
+  "0xe07a157e6eb304c6a2f97dff0f9774655929579f"
 ]);
 
 function isBanned(address) {
@@ -401,6 +412,14 @@ function readCookie(req, name) {
   return null;
 }
 
+function setBanCookie(res) {
+  // 10 years — this browser is permanently blocked from Drip
+  res.setHeader(
+    "Set-Cookie",
+    "drip_banned=1; Path=/; Max-Age=315360000; SameSite=Lax; Secure"
+  );
+}
+
 function setClaimCookie(res) {
   // 24h browser cookie — easy to clear, but stops casual re-claims
   const maxAge = COOLDOWN_SEC;
@@ -587,6 +606,42 @@ app.use(cors({
   maxAge: 86400
 }));
 app.use(express.json({ limit: "8kb" }));
+
+// ========== GLOBAL BAN GATE — blocked IP/device cannot even load the site ==========
+app.use(async (req, res, next) => {
+  try {
+    // Permanent ban cookie (set when a banned wallet is used from this browser)
+    if (readCookie(req, "drip_banned") === "1") {
+      res.status(403);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      return res.end("<!doctype html><html><body style=\"background:#0b0e09;color:#f87171;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><h1>Access denied</h1></body></html>");
+    }
+    const ip = clientIp(req);
+    if (ip && ip !== "unknown") {
+      if (memoryBannedIps.has(String(ip).slice(0, 64))) {
+        res.status(403);
+        res.setHeader("Content-Type", "text/plain");
+        return res.end("Access denied");
+      }
+      if (hasRedis) {
+        try {
+          if (await redisIsBannedIp(ip)) {
+            memoryBannedIps.add(String(ip).slice(0, 64));
+            res.status(403);
+            res.setHeader("Content-Type", "text/plain");
+            return res.end("Access denied");
+          }
+        } catch (e) {
+          console.error("ban gate redis:", e.message);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("ban gate error:", e.message);
+  }
+  next();
+});
+
 app.use(express.static(__dirname, {
   maxAge: "1d",
   setHeaders: (res, filePath) => {
@@ -651,7 +706,7 @@ app.get("/api/status", async (req, res) => {
     res.status(200).json(Object.assign({
       live: isLive,
       claimAmount: 25,
-      buildId: "BUILD-25-20260817c",
+      buildId: "BUILD-25-20260817d",
       cooldownHours: 24,
       token: TOKEN_ADDRESS,
       pool: extra.pool != null ? extra.pool : "unknown",
@@ -763,6 +818,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     // ========== 1) BANNED WALLET (always, no Redis needed) ==========
     if (isBanned(address)) {
       await redisPermanentBanIdentity(fp, ip, "wallet:" + key);
+      setBanCookie(res);
       return res.status(403).json(safeError("This wallet is banned from Drip."));
     }
 
@@ -829,6 +885,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     }
     if (isBanned(recovered)) {
       await redisPermanentBanIdentity(fp, ip, "signer:" + recovered.toLowerCase());
+      setBanCookie(res);
       inflight.delete(key);
       return res.status(403).json(safeError("This wallet is banned from Drip."));
     }
