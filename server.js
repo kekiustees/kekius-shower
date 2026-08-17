@@ -26,7 +26,7 @@ const PORT = process.env.PORT || 3000;
 
 // ============ CONFIG ============
 const TOKEN_ADDRESS = "0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78";
-const CLAIM_AMOUNT = 50n;
+const CLAIM_AMOUNT = 25n;
 const TOKEN_DECIMALS = 9;
 const COOLDOWN_SEC = 24 * 60 * 60; // 24 hours in seconds (for Redis TTL)
 const COOLDOWN_MS = COOLDOWN_SEC * 1000;
@@ -150,7 +150,12 @@ const BANNED_ADDRESSES = new Set([
   "0x94cc71a2d2791f371207f1c0dbc8fc975baa2a61",
   "0x19faf0d031f5b712da0f87fb9082153e5d45b349",
   "0x80988a42c443d066fdd71a0ed7ab74009724ab98",
-  "0xc5d03a45f64777340ab7d7804874f936bea4e38f"
+  "0xc5d03a45f64777340ab7d7804874f936bea4e38f",
+  "0x876fa2979e4189c900174c96c4fc26e786abe158",
+  "0x9b8951b24fe0e4da25d561a99f3e08eb68a24e55",
+  "0x6a92df17eeef7014a40effb6dbe77cfde5c8a446",
+  "0x685c5ec90e31b133b59d73edbf5a854968dc90d6",
+  "0x08f1451de724576a6d84247db37a193702e31dc5"
 ]);
 
 function isBanned(address) {
@@ -500,7 +505,7 @@ app.get("/logo.jpg", (req, res) => {
 
 app.use("/api/", rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 40,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: safeError("Too many requests. Slow down.")
@@ -508,7 +513,7 @@ app.use("/api/", rateLimit({
 
 const claimLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 8,
+  max: 3,
   message: safeError("Too many claim attempts from this IP.")
 });
 

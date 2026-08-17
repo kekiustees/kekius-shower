@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Drip — Kekius Maximus</title>
-  <meta name="description" content="Drip: claim free KEKIUS. Simple. No signup. 50 tokens every 24 hours." />
+  <meta name="description" content="Drip: claim free KEKIUS. Simple. No signup. 25 tokens every 24 hours." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -317,7 +317,7 @@
            onerror="this.onerror=null; this.src='logo.jpg';" />
       <div class="brand">Kekius Maximus</div>
       <div class="subtitle">Drip</div>
-      <p class="tagline">50 KEKIUS every 24 hours.<br>No signup. Just claim.</p>
+      <p class="tagline">25 KEKIUS every 24 hours.<br>No signup. Just claim.</p>
     </header>
 
     <div class="card">
@@ -343,7 +343,7 @@
         </div>
       </div>
 
-      <button class="btn btn-primary" id="claimBtn">Claim 50 KEKIUS</button>
+      <button class="btn btn-primary" id="claimBtn">Claim 25 KEKIUS</button>
       <button class="btn btn-secondary" id="connectBtn">Connect Wallet</button>
       <button class="btn btn-secondary" id="trustBtn" style="margin-top:8px; display:none;">Open in Trust Wallet</button>
 
@@ -355,7 +355,7 @@
           <li>Connect Trust Wallet / MetaMask (or paste an address you control)</li>
           <li>Solve the CAPTCHA</li>
           <li>Sign a message proving ownership (stops IP rotation + address spam)</li>
-          <li>Receive 50 KEKIUS. One claim per address per 24 hours.</li>
+          <li>Receive 25 KEKIUS. One claim per address per 24 hours.</li>
         </ol>
       </div>
     </div>
@@ -371,7 +371,7 @@
   </div>
 
   <script>
-    const CLAIM_AMOUNT = 50;
+    const CLAIM_AMOUNT = 25;
     const BANNED = new Set([
       "0xe9ba2241261e843d550e47882e262c76e27db1f5",
       "0x81463a7d99933a2cebf8661e80fd17b7c6ec246d",
@@ -382,10 +382,81 @@
       "0xa862eb6262a78b7c77d38ea5181cddced9a612ef",
       "0x18387589ea66e7195be0d16784ead78a8b88611f",
       "0xc9eb6bfb0cea4f95d606583123cf6294601080ea",
-      "0xb1d76699a11f961dec7644435ae8182d39d4821",
+      "0xb1d76699a11f961dec76444335ae8182d39d4821",
       "0xb6b81747fb69f5c08643f41722b85f0f0ac30f8a",
       "0xff91da76d3b5e51278c00b1c6ab259575c076532",
-      "0x393f21e015a0f8dc341746eb49e54d84081b76ce"
+      "0x393f21e015a0f8dc341746eb49e54d84081b76ce",
+      "0x39bdab45e5c7543e63160f26ca25b8654a606c30",
+      "0x1f802274b715f1fb54a7c3bcb649d8ef65324933",
+      "0x6bb7fb783cba068f4a11238df6ff144cdc1fea5a",
+      "0xcf9e5a6ba9726c5b61bfd99f0280c7454c1cf532",
+      "0x73b3f274ea79257e85fdcc3bff59febd3c9ae23b",
+      "0xf163d5a9451997fab2e918c999262f4a350e5777",
+      "0x517ef0a07300cbc3a8937af5d4461bbc5f389057",
+      "0x1ef5a2738f0894b8ee28e625a4e5dba9f22543b5",
+      "0x0ebd029292e972e682e6eb0aacc3f302bf2a68f9",
+      "0x9549e44d0acb2769711104b05fabed36241155f2",
+      "0xb92fe925dc43a0ecde6c8b1a2709c170ec4fff4f",
+      "0x263329bb61380345129c3404fdb1cc6573dc14c4",
+      "0xb23b9e7847b8c185762f5388ac6f4630a0d974b0",
+      "0x8520d47791def9601d380a341ce744f5d59f8628",
+      "0xf2909a2f661430856823af23a5b2980096210710",
+      "0xc0f1a3880148de92953fd3455f4e44be94deae79",
+      "0xb15808daec77413236d863e9a66dd5bc7570bc55",
+      "0x1b15a565f846990377e4cd962d8b4880672ac830",
+      "0x45a6d6f6331922355ab54a7847a703b5e90b95e2",
+      "0x3d486a14dda6fdb2d673280a575b56dd93e24711",
+      "0xc4f45ad39ee01f451f91ce4a68747780b919d585",
+      "0xc708846adbdb28edb373e6469e0e376fd1185d7c",
+      "0x33f955354a529958a3efd7c1e482719c872da6f0",
+      "0xf07f1020d01a4aa05c0e99a64c8a14699f870fc3",
+      "0x56b3f4a63b172fa8872ca86bf61639b918f938b1",
+      "0xf3a0a45755a18f5bf17c2761d5724a16a7dfa97d",
+      "0x0c30855a82d98d2ff22ad3426877a60ebf518f1a",
+      "0x6e7b89b04989149fb4dc38de5602ce39fcb261ae",
+      "0xf5008e2bff1265a5108f90bbea093483e47381cb",
+      "0x82513c3e20015fdcf5fdccdc19e573b4f11cd172",
+      "0xdf4daf9ccb26819239c1212cf44919ab56a4c746",
+      "0x6efae299d8ea9194b8237e3be8438c711ecd608e",
+      "0x0336acd16e8fe6f9781404f2a828dcd01df08aca",
+      "0xdabd5d4398b3ae4fdb48070eb2471389a30ef2f1",
+      "0x4781f620f1e7144dfbb8c46d262340e512dd6daa",
+      "0x5383d603ae968eff3931ce5812d5e0c11e85b1ad",
+      "0x555653ba1a8a843c4dcbf6ae7e10a43ef13f84b2",
+      "0x3a9a56b55628d617a2a3788ff384f09ee57eb450",
+      "0xbf6cc145625dd2b5937b2ddbdffbc25320e91c28",
+      "0xab0ff21c84985413de8562ffb9e1c03554ed7467",
+      "0x4296339b4ff8e67f07de40d97a49a680f2598e0f",
+      "0xe62059287fdb0b0471c4da2016b0e4835a3d45a8",
+      "0x44a818901fac46d34e8ab7a9741477a772ac9af3",
+      "0x491093289b4acdd09616fc7117648c806e7864d1",
+      "0x8b65cd8b77ef42c6a09e0ba025f300cf1c02653b",
+      "0x5be55e41331f02422d1fbce84f767f13cc66ad79",
+      "0x515846dda9a63d78d5983d34d4e1833da6311f78",
+      "0xeb4db34f278b0ea6a91b0b7469700ed4f0df861a",
+      "0x21bb1b5fa4e7ac7f0d1d14b8e2457561c8349cf7",
+      "0x188a6279cb05cc11abb16180201abd31bcfeb560",
+      "0xb924bbb3b70e88d9c8ff6e08b302312110f28a69",
+      "0xd981411c8cd875e216d93902ad591e4757aa98b3",
+      "0x177879d15e9d2ea23ca488c3313a06632258849d",
+      "0x52fcdf090996a310f5034fec86d014ca1c43dab7",
+      "0x3668ea6e219ea830f602557ff5250658b7991e27",
+      "0x07509f11acf37a3bf27536417f061a9f6546b011",
+      "0x3762f1e202e28cb0bab580af9b5c93bc1ea1dd9d",
+      "0xd83193b6eea74f795c6910c79f20a095ed6cbffd",
+      "0x73b07550a631021c76664faa671358880fea0f86",
+      "0xca73969c78e0035bcc44c6dd1c63627d7188b7df",
+      "0xb73b94de08e0285731bf1142d32b1f2fac5f6bc9",
+      "0x9595c84b1c58890ba19867dc540c425156ba8621",
+      "0x94cc71a2d2791f371207f1c0dbc8fc975baa2a61",
+      "0x19faf0d031f5b712da0f87fb9082153e5d45b349",
+      "0x80988a42c443d066fdd71a0ed7ab74009724ab98",
+      "0xc5d03a45f64777340ab7d7804874f936bea4e38f",
+      "0x876fa2979e4189c900174c96c4fc26e786abe158",
+      "0x9b8951b24fe0e4da25d561a99f3e08eb68a24e55",
+      "0x6a92df17eeef7014a40effb6dbe77cfde5c8a446",
+      "0x685c5ec90e31b133b59d73edbf5a854968dc90d6",
+      "0x08f1451de724576a6d84247db37a193702e31dc5"
     ]);
     const API_BASE = "";
 
@@ -690,7 +761,7 @@
       } finally {
         if ($("claimBtn").textContent !== "Already claimed (24h cooldown)") {
           $("claimBtn").disabled = false;
-          $("claimBtn").textContent = "Claim 50 KEKIUS";
+          $("claimBtn").textContent = "Claim 25 KEKIUS";
         }
       }
     }
