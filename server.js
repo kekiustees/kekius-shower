@@ -147,7 +147,10 @@ const BANNED_ADDRESSES = new Set([
   "0xca73969c78e0035bcc44c6dd1c63627d7188b7df",
   "0xb73b94de08e0285731bf1142d32b1f2fac5f6bc9",
   "0x9595c84b1c58890ba19867dc540c425156ba8621",
-  "0x94cc71a2d2791f371207f1c0dbc8fc975baa2a61"
+  "0x94cc71a2d2791f371207f1c0dbc8fc975baa2a61",
+  "0x19faf0d031f5b712da0f87fb9082153e5d45b349",
+  "0x80988a42c443d066fdd71a0ed7ab74009724ab98",
+  "0xc5d03a45f64777340ab7d7804874f936bea4e38f"
 ]);
 
 function isBanned(address) {
@@ -275,9 +278,9 @@ function ipKey(ip) {
   return "drip:ip:" + String(ip).slice(0, 64);
 }
 
-/** Max 1 claim per device fingerprint / 24h */
+/** Max 1 claim per device fingerprint / 24h. Missing fp = deny. */
 async function redisReserveFingerprint(fp) {
-  if (!fp || typeof fp !== "string" || fp.length < 4) return true; // skip if missing
+  if (!fp || typeof fp !== "string" || fp.length < 6) return false;
   const result = await redisCommand([
     "SET", fpKey(fp), String(Date.now()), "NX", "EX", COOLDOWN_SEC
   ]);
@@ -289,21 +292,46 @@ async function redisReleaseFingerprint(fp) {
   try { await redisCommand(["DEL", fpKey(fp)]); } catch {}
 }
 
+/**
+ * On-chain cooldown: true if faucet wallet already sent KEKIUS to this address
+ * in the last ~24h (~7500 blocks). Fail-closed on RPC errors when asked.
+ */
+async function onChainRecentlyClaimed(toAddress) {
+  if (!provider || !wallet) return false;
+  const transferTopic = ethers.id("Transfer(address,address,uint256)");
+  const fromTopic = ethers.zeroPadValue(wallet.address, 32);
+  const toTopic = ethers.zeroPadValue(ethers.getAddress(toAddress), 32);
+  const latest = await provider.getBlockNumber();
+  const span = 7500; // ~24h on Ethereum
+  const start = Math.max(0, latest - span);
+  const chunk = 2000;
+  for (let from = start; from <= latest; from += chunk) {
+    const to = Math.min(latest, from + chunk - 1);
+    const logs = await provider.getLogs({
+      address: TOKEN_ADDRESS,
+      fromBlock: from,
+      toBlock: to,
+      topics: [transferTopic, fromTopic, toTopic]
+    });
+    if (logs && logs.length > 0) return true;
+  }
+  return false;
+}
+
 /** Max claims per IP / 24h (default 2) */
 const MAX_CLAIMS_PER_IP = 1;
 async function redisCheckAndIncrIp(ip) {
-  if (!ip || ip === "unknown") return true;
+  // Deny unknown IPs in production-style claims (cannot enforce without IP)
+  if (!ip || ip === "unknown") return false;
   const k = ipKey(ip);
   const count = await redisCommand(["GET", k]);
   const n = count ? parseInt(count, 10) : 0;
   if (n >= MAX_CLAIMS_PER_IP) return false;
-  // INCR + set expiry on first claim
   const next = await redisCommand(["INCR", k]);
   if (Number(next) === 1) {
     await redisCommand(["EXPIRE", k, COOLDOWN_SEC]);
   }
   if (Number(next) > MAX_CLAIMS_PER_IP) {
-    // roll back
     try { await redisCommand(["DECR", k]); } catch {}
     return false;
   }
@@ -615,7 +643,15 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     let reservedFp = null;
     let reservedIp = false;
 
-    // ---- COOLDOWN: Redis is REQUIRED for LIVE (cannot be bypassed on Vercel) ----
+    // Fingerprint is REQUIRED (bots used to omit it and skip device limit)
+    if (!fp || fp.length < 6) {
+      inflight.delete(key);
+      return res.status(400).json(
+        safeError("Missing device check. Refresh the page and try again.")
+      );
+    }
+
+    // ---- COOLDOWN: Redis REQUIRED for LIVE — no fail-open ----
     if (isLive && !hasRedis) {
       inflight.delete(key);
       return res.status(503).json(
@@ -626,7 +662,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     if (hasRedis) {
       usedRedis = true;
       try {
-        // 1) Per-address 24h
+        // 1) Per-address 24h (atomic SET NX)
         const already = await redisHasClaimed(address);
         if (already) {
           inflight.delete(key);
@@ -643,20 +679,18 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         }
         reservedAddress = address;
 
-        // 2) Per-device fingerprint 24h (stops multi-wallet from same browser)
-        if (fingerprint && typeof fingerprint === "string") {
-          const fpOk = await redisReserveFingerprint(fingerprint);
-          if (!fpOk) {
-            await redisReleaseClaim(address);
-            inflight.delete(key);
-            return res.status(429).json(
-              safeError("This device already claimed in the last 24 hours. One claim per person per day.")
-            );
-          }
-          reservedFp = fingerprint;
+        // 2) Per-device fingerprint 24h — REQUIRED (no skip)
+        const fpOk = await redisReserveFingerprint(fp);
+        if (!fpOk) {
+          await redisReleaseClaim(address);
+          inflight.delete(key);
+          return res.status(429).json(
+            safeError("This device already claimed in the last 24 hours. One claim per person per day.")
+          );
         }
+        reservedFp = fp;
 
-        // 3) Per-IP limit (default 2 / 24h)
+        // 3) Per-IP: exactly 1 / 24h
         const ipOk = await redisCheckAndIncrIp(ip);
         if (!ipOk) {
           await redisReleaseClaim(address);
@@ -675,7 +709,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         );
       }
     } else {
-      // DEMO / local only — file fallback
+      // DEMO only — file fallback (not reliable on Vercel)
       console.warn("No Redis configured — cooldown may not work on serverless");
       if (fileHasClaimed(address) || !fileReserveClaim(address)) {
         inflight.delete(key);
@@ -684,6 +718,36 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         );
       }
       reservedAddress = address;
+    }
+
+    // 4) On-chain hard check (same address cannot be paid twice in ~24h even if Redis fails)
+    if (isLive && wallet && provider) {
+      try {
+        const paid = await onChainRecentlyClaimed(address);
+        if (paid) {
+          // Ensure Redis knows too
+          if (hasRedis) {
+            try { await redisReserveClaim(address); } catch {}
+          }
+          if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+          if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+          if (usedRedis && reservedIp) await redisDecrIp(ip);
+          inflight.delete(key);
+          return res.status(429).json(
+            safeError("Already claimed in the last 24 hours. One claim per address per day.")
+          );
+        }
+      } catch (e) {
+        console.error("On-chain cooldown check failed:", e.message);
+        // Fail CLOSED for LIVE — do not pay if we cannot verify
+        if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+        if (usedRedis && reservedIp) await redisDecrIp(ip);
+        inflight.delete(key);
+        return res.status(503).json(
+          safeError("Could not verify claim history. Try again in a minute.")
+        );
+      }
     }
 
     // ---- Send tokens ----

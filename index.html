@@ -413,24 +413,48 @@
     async function getFingerprint() {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
-      canvas.width = 200; canvas.height = 50;
+      canvas.width = 220; canvas.height = 60;
       ctx.textBaseline = "top";
       ctx.font = "14px Arial";
       ctx.fillStyle = "#f5c518";
       ctx.fillText("Drip🐸", 2, 2);
+      ctx.fillStyle = "#0f0";
+      ctx.fillRect(10, 30, 40, 12);
       const dataUrl = canvas.toDataURL();
+      let webgl = "";
+      try {
+        const glc = document.createElement("canvas");
+        const gl = glc.getContext("webgl") || glc.getContext("experimental-webgl");
+        if (gl) {
+          const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+          webgl = dbg
+            ? (gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) + "|" + gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
+            : gl.getParameter(gl.VENDOR);
+        }
+      } catch {}
       const signals = [
-        navigator.userAgent, navigator.language,
-        screen.width + "x" + screen.height,
-        new Date().getTimezoneOffset(),
-        dataUrl.slice(-40)
-      ].join("|");
-      let hash = 0;
+        navigator.userAgent,
+        navigator.language,
+        (navigator.languages || []).join(","),
+        screen.width + "x" + screen.height + "x" + (screen.colorDepth || ""),
+        String(new Date().getTimezoneOffset()),
+        String(navigator.hardwareConcurrency || ""),
+        String(navigator.platform || ""),
+        webgl,
+        dataUrl.slice(-64)
+      ].join("||");
+      // djb2-ish hash to hex
+      let hash = 5381;
       for (let i = 0; i < signals.length; i++) {
-        hash = ((hash << 5) - hash) + signals.charCodeAt(i);
+        hash = ((hash << 5) + hash) ^ signals.charCodeAt(i);
         hash |= 0;
       }
-      return "fp_" + Math.abs(hash).toString(16);
+      let h2 = 0;
+      for (let i = 0; i < signals.length; i++) {
+        h2 = ((h2 << 5) - h2) + signals.charCodeAt(i);
+        h2 |= 0;
+      }
+      return "fp_" + (hash >>> 0).toString(16) + (h2 >>> 0).toString(16);
     }
 
     const COOLDOWN_MS_CLIENT = 24 * 60 * 60 * 1000;
