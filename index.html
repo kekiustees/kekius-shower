@@ -645,9 +645,30 @@
         } else if (hint) {
           hint.remove();
         }
-      } catch {
-        $("poolAmount").textContent = "Offline";
-        $("modeBadge").textContent = "OFFLINE";
+      } catch (e) {
+        console.error("loadStatus failed", e);
+        // Retry once after 1.5s (cold start)
+        setTimeout(async () => {
+          try {
+            const res2 = await fetch(API_BASE + "/api/status");
+            const data2 = await res2.json();
+            isLive = !!data2.live;
+            $("modeBadge").textContent = isLive ? "LIVE" : "DEMO";
+            $("modeBadge").className = "mode-badge " + (isLive ? "mode-live" : "mode-demo");
+            const poolNum2 = Number(data2.pool);
+            if (data2.pool != null && data2.pool !== "unknown" && Number.isFinite(poolNum2)) {
+              $("poolAmount").textContent = poolNum2.toLocaleString(undefined, { maximumFractionDigits: 2 }) + " KEKIUS";
+            } else {
+              $("poolAmount").textContent = isLive ? "Connected" : "Simulation";
+            }
+          } catch (e2) {
+            $("poolAmount").textContent = "Offline";
+            $("modeBadge").textContent = "OFFLINE";
+            $("modeBadge").className = "mode-badge mode-demo";
+          }
+        }, 1500);
+        $("poolAmount").textContent = "Connecting…";
+        $("modeBadge").textContent = "…";
       }
     }
 

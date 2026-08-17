@@ -11,7 +11,7 @@
  * on serverless hosts.
  */
 
-require("dotenv").config();
+try { require("dotenv").config(); } catch (_) {}
 const express = require("express");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
@@ -621,69 +621,80 @@ app.get("/api/challenge", async (req, res) => {
 });
 
 app.get("/api/status", async (req, res) => {
+  // Always respond quickly — never leave the UI on OFFLINE because of RPC/Redis hangs
+  const respond = (extra = {}) => {
+    const keyBody = (PRIVATE_KEY || "").replace(/^0x/i, "").trim();
+    res.status(200).json(Object.assign({
+      live: isLive,
+      claimAmount: Number(CLAIM_AMOUNT),
+      cooldownHours: 24,
+      token: TOKEN_ADDRESS,
+      pool: extra.pool != null ? extra.pool : "unknown",
+      cooldownStore: hasRedis ? "redis" : "file-only",
+      redis: extra.redis || { configured: hasRedis, ok: false },
+      initError: isLive ? null : initError,
+      debug: {
+        privateKeyPresent: keyBody.length > 0,
+        privateKeyHexLength: keyBody.length,
+        privateKeyLooksValid: keyBody.length === 64 && /^[0-9a-fA-F]+$/.test(keyBody),
+        rpcUrlSet: Boolean(RPC_URL),
+        rpcUrlPreview: RPC_URL ? (RPC_URL.slice(0, 32) + "…") : null,
+        walletAddress: wallet ? wallet.address : null
+      }
+    }, extra));
+  };
+
   try {
-    await ensureWallet();
+    // Cap wallet init at 4s so status never times out the serverless function
+    await Promise.race([
+      ensureWallet(),
+      new Promise((resolve) => setTimeout(resolve, 4000))
+    ]);
   } catch (e) {
-    console.error("ensureWallet in status:", e.message);
+    console.error("status ensureWallet:", e.message);
   }
-  try {
+
   let pool = "unknown";
   if (isLive && token && wallet) {
     try {
-      const bal = await token.balanceOf(wallet.address);
+      const bal = await Promise.race([
+        token.balanceOf(wallet.address),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("balance timeout")), 3000))
+      ]);
       let decimals = TOKEN_DECIMALS;
       try {
-        decimals = Number(await token.decimals());
-        if (!Number.isFinite(decimals)) decimals = TOKEN_DECIMALS;
+        const d = Number(await token.decimals());
+        if (Number.isFinite(d)) decimals = d;
       } catch {}
       const formatted = ethers.formatUnits(bal, decimals);
-      pool = Number.isFinite(Number(formatted)) ? formatted : "unknown";
+      if (Number.isFinite(Number(formatted))) pool = formatted;
     } catch (e) {
       console.error("Status balance read failed:", e.message);
-      pool = "unknown";
     }
   }
+
   let redis = { configured: hasRedis, ok: false, error: null };
   if (hasRedis) {
     try {
-      redis = Object.assign({ configured: true }, await redisPing());
+      const ping = await Promise.race([
+        redisPing(),
+        new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "ping timeout" }), 2500))
+      ]);
+      redis = Object.assign({ configured: true }, ping);
     } catch (e) {
       redis = { configured: true, ok: false, error: e.message };
     }
   } else if (UPSTASH_URL || UPSTASH_TOKEN) {
     redis.error = "Redis env vars present but invalid (URL must start with https://)";
   }
-  const keyBody = (PRIVATE_KEY || "").replace(/^0x/i, "").trim();
-  res.json({
-    live: isLive,
-    claimAmount: Number(CLAIM_AMOUNT),
-    cooldownHours: 24,
-    token: TOKEN_ADDRESS,
-    pool,
-    cooldownStore: redis.ok ? "redis" : (hasRedis ? "redis-error" : "file-only"),
-    redis,
-    initError: isLive ? null : initError,
-    debug: {
-      privateKeyPresent: keyBody.length > 0,
-      privateKeyHexLength: keyBody.length,
-      privateKeyLooksValid: keyBody.length === 64 && /^[0-9a-fA-F]+$/.test(keyBody),
-      rpcUrlSet: Boolean(RPC_URL),
-      rpcUrlPreview: RPC_URL ? (RPC_URL.slice(0, 32) + "…") : null,
-      walletAddress: wallet ? wallet.address : null
-    }
-  });
+
+  try {
+    respond({ pool, redis, cooldownStore: redis.ok ? "redis" : (hasRedis ? "redis-error" : "file-only") });
   } catch (e) {
-    console.error("Status endpoint error:", e.message);
-    res.status(200).json({
-      live: false,
-      claimAmount: Number(CLAIM_AMOUNT),
-      pool: "unknown",
-      error: "status failed: " + e.message,
-      redis: { configured: hasRedis, ok: false }
-    });
+    console.error("Status respond error:", e.message);
+    res.status(200).json({ live: false, claimAmount: 25, pool: "unknown", error: e.message });
   }
 });
-
 
 app.post("/api/claim", claimLimiter, async (req, res) => {
   await ensureWallet();
@@ -1002,8 +1013,8 @@ app.get("*", (req, res) => {
   res.sendFile(indexPath);
 });
 
-// Kick off wallet init immediately (needed on Vercel serverless)
-ensureWallet();
+// Do NOT call ensureWallet() at import time — it can hang/timeout cold starts on Vercel.
+// Status and claim routes call ensureWallet() themselves.
 
 // Vercel uses the exported app; local uses listen()
 module.exports = app;
