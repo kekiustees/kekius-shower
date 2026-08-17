@@ -68,7 +68,9 @@ function claimKey(address) {
 }
 
 // ============ BANNED WALLETS ============
-// Permanently blocked from claiming (address + signer checked)
+// Permanently blocked from claiming (address + signer checked).
+// When a banned wallet hits the API, its IP + device fingerprint are
+// also permanently banned in Redis so the same entity cannot return.
 const BANNED_ADDRESSES = new Set([
   "0xe9ba2241261e843d550e47882e262c76e27db1f5",
   "0x81463a7d99933a2cebf8661e80fd17b7c6ec246d",
@@ -135,7 +137,13 @@ const BANNED_ADDRESSES = new Set([
   "0x188a6279cb05cc11abb16180201abd31bcfeb560",
   "0xb924bbb3b70e88d9c8ff6e08b302312110f28a69",
   "0xd981411c8cd875e216d93902ad591e4757aa98b3",
-  "0x177879d15e9d2ea23ca488c3313a06632258849d"
+  "0x177879d15e9d2ea23ca488c3313a06632258849d",
+  "0x52fcdf090996a310f5034fec86d014ca1c43dab7",
+  "0x3668ea6e219ea830f602557ff5250658b7991e27",
+  "0x07509f11acf37a3bf27536417f061a9f6546b011",
+  "0x3762f1e202e28cb0bab580af9b5c93bc1ea1dd9d",
+  "0xd83193b6eea74f795c6910c79f20a095ed6cbffd",
+  "0x73b07550a631021c76664faa671358880fea0f86"
 ]);
 
 function isBanned(address) {
@@ -143,6 +151,50 @@ function isBanned(address) {
     return BANNED_ADDRESSES.has(String(address).toLowerCase());
   } catch {
     return false;
+  }
+}
+
+// Permanent ban keys (no expiry) for IP / fingerprint linked to banned wallets
+function banFpKey(fp) {
+  return "drip:ban:fp:" + String(fp).slice(0, 80);
+}
+function banIpKey(ip) {
+  return "drip:ban:ip:" + String(ip).slice(0, 64);
+}
+
+async function redisIsBannedFp(fp) {
+  if (!hasRedis || !fp) return false;
+  try {
+    const v = await redisCommand(["GET", banFpKey(fp)]);
+    return v != null && v !== "";
+  } catch {
+    return false;
+  }
+}
+
+async function redisIsBannedIp(ip) {
+  if (!hasRedis || !ip || ip === "unknown") return false;
+  try {
+    const v = await redisCommand(["GET", banIpKey(ip)]);
+    return v != null && v !== "";
+  } catch {
+    return false;
+  }
+}
+
+/** Permanently ban this device + IP (used when a known-bad wallet appears) */
+async function redisPermanentBanIdentity(fp, ip, reason) {
+  if (!hasRedis) return;
+  const payload = String(reason || "banned") + "|" + Date.now();
+  try {
+    if (fp && typeof fp === "string" && fp.length >= 4) {
+      await redisCommand(["SET", banFpKey(fp), payload]);
+    }
+    if (ip && ip !== "unknown") {
+      await redisCommand(["SET", banIpKey(ip), payload]);
+    }
+  } catch (e) {
+    console.error("Failed to permanent-ban identity:", e.message);
   }
 }
 
@@ -487,9 +539,6 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     if (!address || typeof address !== "string" || !ethers.isAddress(address)) {
       return res.status(400).json(safeError("Invalid Ethereum address"));
     }
-    if (isBanned(address)) {
-      return res.status(403).json(safeError("This wallet is banned from Drip."));
-    }
     if (!signature || typeof signature !== "string" || signature.length > 200) {
       return res.status(400).json(safeError("Invalid signature"));
     }
@@ -498,6 +547,21 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     }
 
     const key = address.toLowerCase();
+    const ip = clientIp(req);
+    const fp = typeof fingerprint === "string" ? fingerprint : "";
+
+    // Permanent identity bans (IP / device linked to known abusers)
+    if (await redisIsBannedIp(ip) || await redisIsBannedFp(fp)) {
+      return res.status(403).json(
+        safeError("Access denied. This device or network is banned from Drip.")
+      );
+    }
+
+    // Known bad wallets — also permanently ban this IP + device
+    if (isBanned(address)) {
+      await redisPermanentBanIdentity(fp, ip, "wallet:" + key);
+      return res.status(403).json(safeError("This wallet is banned from Drip."));
+    }
 
     if (inflight.has(key)) {
       return res.status(429).json(safeError("Claim already in progress. Wait a moment."));
@@ -517,6 +581,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       return res.status(400).json(safeError("Signature does not match address"));
     }
     if (isBanned(recovered)) {
+      await redisPermanentBanIdentity(fp, ip, "signer:" + recovered.toLowerCase());
       inflight.delete(key);
       return res.status(403).json(safeError("This wallet is banned from Drip."));
     }
@@ -543,7 +608,6 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       );
     }
 
-    const ip = clientIp(req);
     let reservedFp = null;
     let reservedIp = false;
 
