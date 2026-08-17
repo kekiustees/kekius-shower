@@ -496,7 +496,10 @@
       "0x6aa1ebfce1ed2d974d0e2d5aedcd8ce475435aa3",
       "0x83e0d2e8a30cea088d3c680484a6e314cfd14061",
       "0xed1a6f54860c52c0c704efbd7e6c5ac8608aa94b",
-      "0xe07a157e6eb304c6a2f97dff0f9774655929579f"
+      "0xe07a157e6eb304c6a2f97dff0f9774655929579f",
+      "0x47953b8fc3726376bd7d10ab6a99c8435c7e8730",
+      "0x6269c1861a92b62a9126f9789ba4f55661f2eba7",
+      "0x7a71ff93cda02fa1932c1483ed0a0a4165dae32e"
     ]);
     const API_BASE = "";
 
@@ -616,6 +619,30 @@
       captchaB = Math.floor(Math.random() * 12) + 1;
       challengeId = null;
       $("captchaQuestion").textContent = `${captchaA} + ${captchaB} = ?`;
+    }
+
+    
+    async function runBanGate() {
+      try {
+        const fingerprint = await getFingerprint();
+        const res = await fetch(API_BASE + "/api/gate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-drip-fp": fingerprint || "" },
+          body: JSON.stringify({ fingerprint })
+        });
+        if (res.status === 403) {
+          document.documentElement.innerHTML = "<body style='background:#0b0e09;color:#f87171;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'><h1>Access denied</h1></body>";
+          return false;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data && data.banned) {
+          document.documentElement.innerHTML = "<body style='background:#0b0e09;color:#f87171;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'><h1>Access denied</h1></body>";
+          return false;
+        }
+      } catch (e) {
+        console.warn("gate check failed", e);
+      }
+      return true;
     }
 
     async function loadStatus() {
@@ -839,7 +866,7 @@
         setLocalCooldown();
         lockClaimButton("Already claimed (24h cooldown)");
         newCaptcha();
-        loadStatus();
+        runBanGate().then(function(ok){ if(ok) loadStatus(); });
         return;
       } catch (err) {
         console.error(err);
@@ -854,7 +881,7 @@
 
     function init() {
       newCaptcha();
-      loadStatus();
+      runBanGate().then(function(ok){ if (ok) loadStatus(); });
       if (hasLocalCooldown()) {
         lockClaimButton("Already claimed (24h cooldown)");
       }

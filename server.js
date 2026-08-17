@@ -181,7 +181,10 @@ const BANNED_ADDRESSES = new Set([
   "0x6aa1ebfce1ed2d974d0e2d5aedcd8ce475435aa3",
   "0x83e0d2e8a30cea088d3c680484a6e314cfd14061",
   "0xed1a6f54860c52c0c704efbd7e6c5ac8608aa94b",
-  "0xe07a157e6eb304c6a2f97dff0f9774655929579f"
+  "0xe07a157e6eb304c6a2f97dff0f9774655929579f",
+  "0x47953b8fc3726376bd7d10ab6a99c8435c7e8730",
+  "0x6269c1861a92b62a9126f9789ba4f55661f2eba7",
+  "0x7a71ff93cda02fa1932c1483ed0a0a4165dae32e"
 ]);
 
 function isBanned(address) {
@@ -637,33 +640,58 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "8kb" }));
 
-// ========== GLOBAL BAN GATE — blocked IP/device cannot even load the site ==========
+// ========== GLOBAL BAN GATE — banned IP/device cannot load ANY page ==========
+function denyAccess(res) {
+  res.status(403);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  return res.end("<!doctype html><html><body style=\"background:#0b0e09;color:#f87171;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><h1>Access denied</h1></body></html>");
+}
+
 app.use(async (req, res, next) => {
   try {
-    // Permanent ban cookie (set when a banned wallet is used from this browser)
+    // 1) Ban cookie (set when a banned wallet was used in this browser)
     if (readCookie(req, "drip_banned") === "1") {
-      res.status(403);
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      return res.end("<!doctype html><html><body style=\"background:#0b0e09;color:#f87171;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><h1>Access denied</h1></body></html>");
+      return denyAccess(res);
     }
+
     const ip = clientIp(req);
-    if (ip && ip !== "unknown") {
-      if (memoryBannedIps.has(String(ip).slice(0, 64))) {
-        res.status(403);
-        res.setHeader("Content-Type", "text/plain");
-        return res.end("Access denied");
+
+    // 2) Memory IP ban
+    if (ip && ip !== "unknown" && memoryBannedIps.has(String(ip).slice(0, 64))) {
+      return denyAccess(res);
+    }
+
+    // 3) Fingerprint from header (frontend sends on every request after first load)
+    const fpHdr = String(req.headers["x-drip-fp"] || "").trim();
+    if (fpHdr && fpHdr.length >= 6) {
+      if (memoryBannedFps.has(fpHdr.slice(0, 80))) {
+        setBanCookie(res);
+        return denyAccess(res);
       }
       if (hasRedis) {
         try {
-          if (await redisIsBannedIp(ip)) {
-            memoryBannedIps.add(String(ip).slice(0, 64));
-            res.status(403);
-            res.setHeader("Content-Type", "text/plain");
-            return res.end("Access denied");
+          if (await redisIsBannedFp(fpHdr)) {
+            memoryBannedFps.add(fpHdr.slice(0, 80));
+            setBanCookie(res);
+            return denyAccess(res);
           }
         } catch (e) {
-          console.error("ban gate redis:", e.message);
+          console.error("ban gate fp redis:", e.message);
         }
+      }
+    }
+
+    // 4) Redis permanent IP ban
+    if (ip && ip !== "unknown" && hasRedis) {
+      try {
+        if (await redisIsBannedIp(ip)) {
+          memoryBannedIps.add(String(ip).slice(0, 64));
+          setBanCookie(res);
+          return denyAccess(res);
+        }
+      } catch (e) {
+        console.error("ban gate ip redis:", e.message);
       }
     }
   } catch (e) {
@@ -713,6 +741,28 @@ const claimLimiter = rateLimit({
 });
 
 // ============ ROUTES ============
+app.post("/api/gate", async (req, res) => {
+  try {
+    const fp = typeof (req.body && req.body.fingerprint) === "string" ? req.body.fingerprint.trim() : "";
+    const ip = clientIp(req);
+    if (await isIdentityBanned(fp, ip)) {
+      setBanCookie(res);
+      return res.status(403).json({ ok: false, banned: true });
+    }
+    // If client also sends a wallet, ban identity when it's on the list
+    const addr = req.body && req.body.address;
+    if (addr && isBanned(addr)) {
+      await redisPermanentBanIdentity(fp, ip, "gate:" + String(addr).toLowerCase());
+      setBanCookie(res);
+      return res.status(403).json({ ok: false, banned: true });
+    }
+    return res.json({ ok: true, banned: false });
+  } catch (e) {
+    console.error("gate error:", e.message);
+    return res.json({ ok: true, banned: false });
+  }
+});
+
 app.get("/api/challenge", async (req, res) => {
   try {
     if (!hasRedis) {
