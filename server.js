@@ -26,7 +26,7 @@ const PORT = process.env.PORT || 3000;
 
 // ============ CONFIG ============
 const TOKEN_ADDRESS = "0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78";
-const CLAIM_AMOUNT = 25n;
+const CLAIM_AMOUNT = 25n; // HARD LOCK — payout is always 25 KEKIUS
 const TOKEN_DECIMALS = 9;
 const COOLDOWN_SEC = 24 * 60 * 60; // 24 hours in seconds (for Redis TTL)
 const COOLDOWN_MS = COOLDOWN_SEC * 1000;
@@ -181,6 +181,11 @@ function isBanned(address) {
   }
 }
 
+// Process-local ban cache (supplements Redis; survives for the life of the instance)
+const memoryBannedIps = new Set();
+const memoryBannedFps = new Set();
+
+
 // Permanent ban keys (no expiry) for IP / fingerprint linked to banned wallets
 function banFpKey(fp) {
   return "drip:ban:fp:" + String(fp).slice(0, 80);
@@ -211,18 +216,33 @@ async function redisIsBannedIp(ip) {
 
 /** Permanently ban this device + IP (used when a known-bad wallet appears) */
 async function redisPermanentBanIdentity(fp, ip, reason) {
-  if (!hasRedis) return;
   const payload = String(reason || "banned") + "|" + Date.now();
+  // Always ban in memory so this instance blocks immediately
+  if (fp && typeof fp === "string" && fp.length >= 4) {
+    memoryBannedFps.add(String(fp).slice(0, 80));
+  }
+  if (ip && ip !== "unknown") {
+    memoryBannedIps.add(String(ip).slice(0, 64));
+  }
+  if (!hasRedis) return;
   try {
     if (fp && typeof fp === "string" && fp.length >= 4) {
-      await redisCommand(["SET", banFpKey(fp), payload]);
+      await redisCommand(["SET", banFpKey(fp), payload]); // no expiry = permanent
     }
     if (ip && ip !== "unknown") {
-      await redisCommand(["SET", banIpKey(ip), payload]);
+      await redisCommand(["SET", banIpKey(ip), payload]); // no expiry = permanent
     }
   } catch (e) {
-    console.error("Failed to permanent-ban identity:", e.message);
+    console.error("Failed to permanent-ban identity in Redis:", e.message);
   }
+}
+
+async function isIdentityBanned(fp, ip) {
+  if (fp && memoryBannedFps.has(String(fp).slice(0, 80))) return true;
+  if (ip && ip !== "unknown" && memoryBannedIps.has(String(ip).slice(0, 64))) return true;
+  if (await redisIsBannedIp(ip)) return true;
+  if (await redisIsBannedFp(fp)) return true;
+  return false;
 }
 
 
@@ -703,10 +723,28 @@ app.get("/api/status", async (req, res) => {
 app.post("/api/claim", claimLimiter, async (req, res) => {
   await ensureWallet();
   let reservedAddress = null;
+  let reservedFp = null;
+  let reservedIp = false;
   let usedRedis = false;
 
+  // Helper to unwind Redis reservations on failure
+  async function unwind() {
+    try {
+      if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+      if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+      if (usedRedis && reservedIp) await redisDecrIp(clientIp(req));
+      if (usedRedis) await redisReleaseSubnet(clientIp(req));
+    } catch {}
+  }
+
   try {
-    const { address, signature, message, fingerprint, challengeId, captchaAnswer } = req.body || {};
+    const body = req.body || {};
+    const address = body.address;
+    const signature = body.signature;
+    const message = body.message;
+    const fingerprint = body.fingerprint;
+    const challengeId = body.challengeId;
+    const captchaAnswer = body.captchaAnswer;
 
     const ua = String(req.headers["user-agent"] || "");
     if (isBotUa(ua)) {
@@ -716,6 +754,49 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     if (!address || typeof address !== "string" || !ethers.isAddress(address)) {
       return res.status(400).json(safeError("Invalid Ethereum address"));
     }
+
+    const key = address.toLowerCase();
+    const ip = clientIp(req);
+    const fp = typeof fingerprint === "string" ? fingerprint.trim() : "";
+
+    // ========== 1) BANNED WALLET (always, no Redis needed) ==========
+    if (isBanned(address)) {
+      await redisPermanentBanIdentity(fp, ip, "wallet:" + key);
+      return res.status(403).json(safeError("This wallet is banned from Drip."));
+    }
+
+    // ========== 2) BANNED IP / DEVICE (memory + Redis) ==========
+    if (await isIdentityBanned(fp, ip)) {
+      return res.status(403).json(
+        safeError("Access denied. This device or network is banned from Drip.")
+      );
+    }
+
+    // ========== 3) LIVE requires Redis for all anti-abuse ==========
+    if (isLive && !hasRedis) {
+      return res.status(503).json(
+        safeError("Claim store not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.")
+      );
+    }
+
+    // ========== 4) MUST ALREADY HOLD KEKIUS (before anything else expensive) ==========
+    if (isLive) {
+      if (!token) {
+        return res.status(503).json(safeError("Token contract not ready. Try again."));
+      }
+      try {
+        const holderBal = await token.balanceOf(address);
+        if (holderBal <= 0n) {
+          return res.status(403).json(
+            safeError("You must already hold KEKIUS in this wallet to claim.")
+          );
+        }
+      } catch (e) {
+        console.error("Holder balance check failed:", e.message);
+        return res.status(503).json(safeError("Could not verify KEKIUS balance. Try again."));
+      }
+    }
+
     if (!signature || typeof signature !== "string" || signature.length > 200) {
       return res.status(400).json(safeError("Invalid signature"));
     }
@@ -723,21 +804,9 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       return res.status(400).json(safeError("Invalid message"));
     }
 
-    const key = address.toLowerCase();
-    const ip = clientIp(req);
-    const fp = typeof fingerprint === "string" ? fingerprint : "";
-
-    // Permanent identity bans (IP / device linked to known abusers)
-    if (await redisIsBannedIp(ip) || await redisIsBannedFp(fp)) {
-      return res.status(403).json(
-        safeError("Access denied. This device or network is banned from Drip.")
-      );
-    }
-
-    // Known bad wallets — also permanently ban this IP + device
-    if (isBanned(address)) {
-      await redisPermanentBanIdentity(fp, ip, "wallet:" + key);
-      return res.status(403).json(safeError("This wallet is banned from Drip."));
+    // Fingerprint required
+    if (!fp || fp.length < 6) {
+      return res.status(400).json(safeError("Missing device check. Refresh the page and try again."));
     }
 
     if (inflight.has(key)) {
@@ -745,7 +814,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     }
     inflight.add(key);
 
-    // Signature checks
+    // ========== 5) Signature proof ==========
     let recovered;
     try {
       recovered = ethers.verifyMessage(message, signature);
@@ -766,6 +835,11 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       inflight.delete(key);
       return res.status(400).json(safeError("Invalid claim message"));
     }
+    // Message must request exactly 25 KEKIUS (blocks old 50-token scripts)
+    if (!message.includes("25 KEKIUS") && !message.includes(String(CLAIM_AMOUNT) + " KEKIUS")) {
+      inflight.delete(key);
+      return res.status(400).json(safeError("Invalid claim amount in message. Refresh the page."));
+    }
     const tsMatch = message.match(/Timestamp:\s*(\d+)/);
     if (!tsMatch) {
       inflight.delete(key);
@@ -777,7 +851,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       return res.status(400).json(safeError("Signature expired. Please try again."));
     }
 
-    // ---- Browser cookie check (soft barrier) ----
+    // Cookie soft barrier
     if (readCookie(req, "drip_claimed") === "1") {
       inflight.delete(key);
       return res.status(429).json(
@@ -785,16 +859,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       );
     }
 
-    let reservedFp = null;
-    let reservedIp = false;
-
-    // Signed message must request the current amount (blocks old 50-token scripts)
-    if (!message.includes(String(CLAIM_AMOUNT) + " KEKIUS")) {
-      inflight.delete(key);
-      return res.status(400).json(safeError("Invalid claim amount in message. Refresh the page."));
-    }
-
-    // Server-side one-time captcha (required when Redis is configured)
+    // Server captcha (when Redis available)
     if (hasRedis) {
       const okCh = await consumeChallenge(challengeId, captchaAnswer);
       if (!okCh) {
@@ -803,162 +868,104 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       }
     }
 
-    // Fingerprint is REQUIRED (bots used to omit it and skip device limit)
-    if (!fp || fp.length < 6) {
-      inflight.delete(key);
-      return res.status(400).json(
-        safeError("Missing device check. Refresh the page and try again.")
-      );
-    }
-
-    // ---- COOLDOWN: Redis REQUIRED for LIVE — no fail-open ----
-    if (isLive && !hasRedis) {
-      inflight.delete(key);
-      return res.status(503).json(
-        safeError("Claim store not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.")
-      );
-    }
-
+    // ========== 6) Cooldowns (Redis required for LIVE) ==========
     if (hasRedis) {
       usedRedis = true;
       try {
-        // 1) Per-address 24h (atomic SET NX)
-        const already = await redisHasClaimed(address);
-        if (already) {
+        if (await redisHasClaimed(address)) {
           inflight.delete(key);
-          return res.status(429).json(
-            safeError("Already claimed in the last 24 hours. One claim per address per day.")
-          );
+          return res.status(429).json(safeError("Already claimed in the last 24 hours. One claim per address per day."));
         }
-        const reserved = await redisReserveClaim(address);
-        if (!reserved) {
+        if (!(await redisReserveClaim(address))) {
           inflight.delete(key);
-          return res.status(429).json(
-            safeError("Already claimed in the last 24 hours. One claim per address per day.")
-          );
+          return res.status(429).json(safeError("Already claimed in the last 24 hours. One claim per address per day."));
         }
         reservedAddress = address;
 
-        // 2) Per-device fingerprint 24h — REQUIRED (no skip)
-        const fpOk = await redisReserveFingerprint(fp);
-        if (!fpOk) {
+        if (!(await redisReserveFingerprint(fp))) {
           await redisReleaseClaim(address);
           inflight.delete(key);
-          return res.status(429).json(
-            safeError("This device already claimed in the last 24 hours. One claim per person per day.")
-          );
+          return res.status(429).json(safeError("This device already claimed in the last 24 hours. One claim per person per day."));
         }
         reservedFp = fp;
 
-        // 3) Per-IP: exactly 1 / 24h
-        const ipOk = await redisCheckAndIncrIp(ip);
-        if (!ipOk) {
+        if (!(await redisCheckAndIncrIp(ip))) {
           await redisReleaseClaim(address);
-          if (reservedFp) await redisReleaseFingerprint(reservedFp);
+          await redisReleaseFingerprint(fp);
           inflight.delete(key);
-          return res.status(429).json(
-            safeError("This network already claimed in the last 24 hours. One claim per IP per day.")
-          );
+          return res.status(429).json(safeError("This network already claimed in the last 24 hours. One claim per IP per day."));
         }
         reservedIp = true;
 
-        // 4) Per-/24 network: 1 claim / 24h (stops sequential VPN IPs in same range)
-        const netOk = await redisReserveSubnet(ip);
-        if (!netOk) {
+        if (!(await redisReserveSubnet(ip))) {
           await redisReleaseClaim(address);
-          if (reservedFp) await redisReleaseFingerprint(reservedFp);
-          if (reservedIp) await redisDecrIp(ip);
+          await redisReleaseFingerprint(fp);
+          await redisDecrIp(ip);
           inflight.delete(key);
-          return res.status(429).json(
-            safeError("This network range already claimed in the last 24 hours.")
-          );
+          return res.status(429).json(safeError("This network range already claimed in the last 24 hours."));
         }
       } catch (e) {
         inflight.delete(key);
         console.error("Redis cooldown error:", e.message);
-        return res.status(503).json(
-          safeError("Redis claim store error. Check UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN on Vercel (must be the REST URL that starts with https://, not rediss://).")
-        );
+        return res.status(503).json(safeError("Redis claim store error. Check Upstash env vars on Vercel."));
       }
     } else {
-      // DEMO only — file fallback (not reliable on Vercel)
-      console.warn("No Redis configured — cooldown may not work on serverless");
+      // DEMO only
       if (fileHasClaimed(address) || !fileReserveClaim(address)) {
         inflight.delete(key);
-        return res.status(429).json(
-          safeError("Already claimed in the last 24 hours. One claim per address per day.")
-        );
+        return res.status(429).json(safeError("Already claimed in the last 24 hours. One claim per address per day."));
       }
       reservedAddress = address;
     }
 
-    // 4) On-chain hard check (same address cannot be paid twice in ~24h even if Redis fails)
+    // ========== 7) On-chain recent claim check ==========
     if (isLive && wallet && provider) {
       try {
-        const paid = await onChainRecentlyClaimed(address);
-        if (paid) {
-          // Ensure Redis knows too
-          if (hasRedis) {
-            try { await redisReserveClaim(address); } catch {}
-          }
-          if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
-          if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
-          if (usedRedis && reservedIp) await redisDecrIp(ip);
-          if (usedRedis) await redisReleaseSubnet(ip);
+        if (await onChainRecentlyClaimed(address)) {
+          await unwind();
           inflight.delete(key);
-          return res.status(429).json(
-            safeError("Already claimed in the last 24 hours. One claim per address per day.")
-          );
+          return res.status(429).json(safeError("Already claimed in the last 24 hours. One claim per address per day."));
         }
       } catch (e) {
         console.error("On-chain cooldown check failed:", e.message);
-        // Fail CLOSED for LIVE — do not pay if we cannot verify
-        if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
-        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
-        if (usedRedis && reservedIp) await redisDecrIp(ip);
-        if (usedRedis) await redisReleaseSubnet(ip);
+        await unwind();
         inflight.delete(key);
-        return res.status(503).json(
-          safeError("Could not verify claim history. Try again in a minute.")
-        );
+        return res.status(503).json(safeError("Could not verify claim history. Try again in a minute."));
       }
     }
 
-    // ---- Must already hold KEKIUS (anti-farm empty wallets) ----
+    // ========== 8) RE-CHECK holder right before send (race-proof) ==========
     if (isLive && token) {
       try {
-        const holderBal = await token.balanceOf(address);
-        if (holderBal === 0n) {
-          if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
-          if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
-          if (usedRedis && reservedIp) await redisDecrIp(ip);
-          if (usedRedis) await redisReleaseSubnet(ip);
+        const holderBal2 = await token.balanceOf(address);
+        if (holderBal2 <= 0n) {
+          await unwind();
           inflight.delete(key);
-          return res.status(403).json(
-            safeError("You must already hold KEKIUS in this wallet to claim.")
-          );
+          return res.status(403).json(safeError("You must already hold KEKIUS in this wallet to claim."));
         }
       } catch (e) {
-        console.error("Holder balance check failed:", e.message);
-        if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
-        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
-        if (usedRedis && reservedIp) await redisDecrIp(ip);
-        if (usedRedis) await redisReleaseSubnet(ip);
+        await unwind();
         inflight.delete(key);
         return res.status(503).json(safeError("Could not verify KEKIUS balance. Try again."));
       }
     }
 
-    // ---- Send tokens ----
+    // ========== 9) PAYOUT — HARD LOCKED TO 25 KEKIUS ==========
     let txHash = null;
     if (isLive && token && wallet) {
-      const amount = CLAIM_AMOUNT * 10n ** BigInt(TOKEN_DECIMALS);
+      // Read decimals from chain; amount is ALWAYS 25 tokens
+      let decimals = TOKEN_DECIMALS;
+      try {
+        const d = Number(await token.decimals());
+        if (Number.isFinite(d) && d >= 0 && d <= 18) decimals = d;
+      } catch {}
+      const PAYOUT_TOKENS = 25n; // hard lock — do not use any other value
+      const amount = PAYOUT_TOKENS * (10n ** BigInt(decimals));
+      console.log("PAYOUT", { to: address, tokens: "25", decimals, raw: amount.toString() });
+
       const bal = await token.balanceOf(wallet.address);
       if (bal < amount) {
-        if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
-        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
-        if (usedRedis && reservedIp) await redisDecrIp(ip);
-        if (usedRedis) await redisReleaseSubnet(ip);
+        await unwind();
         inflight.delete(key);
         return res.status(503).json(safeError("Drip is empty. Come back later."));
       }
@@ -967,19 +974,16 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         const tx = await token.transfer(address, amount);
         const receipt = await tx.wait(1);
         txHash = receipt.hash;
-        console.log(`Claim OK → ${address.slice(0, 8)}… | ${txHash.slice(0, 12)}…`);
+        console.log("Claim OK", { to: address.slice(0, 10), amount: "25", tx: txHash.slice(0, 14) });
       } catch (sendErr) {
-        if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
-        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
-        if (usedRedis && reservedIp) await redisDecrIp(ip);
-        if (usedRedis) await redisReleaseSubnet(ip);
+        await unwind();
         inflight.delete(key);
         console.error("Transfer failed:", sendErr.message);
         return res.status(500).json(safeError("Token transfer failed. Please try again."));
       }
     } else {
       txHash = "0xDEMO" + crypto.randomBytes(16).toString("hex");
-      console.log(`[DEMO] Claim for ${address.slice(0, 8)}…`);
+      console.log("[DEMO] Claim for", address.slice(0, 8));
     }
 
     inflight.delete(key);
@@ -987,17 +991,15 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
 
     res.json({
       success: true,
-      amount: Number(CLAIM_AMOUNT),
+      amount: 25, // always 25 in API response
       txHash,
       live: isLive,
       message: isLive
-        ? `${CLAIM_AMOUNT} KEKIUS sent! One claim per address every 24 hours.`
-        : `${CLAIM_AMOUNT} KEKIUS recorded (DEMO – no real tokens moved)`
+        ? "25 KEKIUS sent! One claim per address every 24 hours."
+        : "25 KEKIUS recorded (DEMO – no real tokens moved)"
     });
   } catch (err) {
-    if (usedRedis && reservedAddress) {
-      try { await redisReleaseClaim(reservedAddress); } catch {}
-    }
+    try { await unwind(); } catch {}
     if (req.body && req.body.address) {
       inflight.delete(String(req.body.address).toLowerCase());
     }
