@@ -168,7 +168,9 @@ const BANNED_ADDRESSES = new Set([
   "0x5096bc33bca8f8d82ea175568179fa1f19554836",
   "0x829505da6ad79c30499658a82c86b62a7e7c2f9c",
   "0x0ef02ecf434a6514c8db71caf69f75a83d1aa0ed",
-  "0xe388f8b0db2afa273b1fdd886a7218682a30bf7b"
+  "0xe388f8b0db2afa273b1fdd886a7218682a30bf7b",
+  "0x48c998026c7a2a3084d2c9f967f81eeda41b404d",
+  "0x7025f1d1bddcf7f0fbac9429204c6c3c7ec1b5fb"
 ]);
 
 function isBanned(address) {
@@ -589,18 +591,20 @@ app.get(["/logo.jpg", "/logo.jpeg", "/favicon.ico"], (req, res) => {
   res.sendFile(logoPath);
 });
 
-app.use("/api/", rateLimit({
+// Rate limits — validate:false avoids Vercel trust-proxy crashes
+const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  message: safeError("Too many requests. Slow down.")
-}));
-
+  message: safeError("Too many requests. Slow down."),
+  validate: false
+});
 const claimLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 3,
-  message: safeError("Too many claim attempts from this IP.")
+  max: 5,
+  message: safeError("Too many claim attempts from this IP."),
+  validate: false
 });
 
 // ============ ROUTES ============
