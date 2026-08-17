@@ -1,0 +1,1 @@
+This package pays 25 KEKIUS only. If live API shows 50, this package was NOT deployed.

@@ -26,7 +26,7 @@ const PORT = process.env.PORT || 3000;
 
 // ============ CONFIG ============
 const TOKEN_ADDRESS = "0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78";
-const CLAIM_AMOUNT = 25n; // HARD LOCK 25 — never 50
+const CLAIM_AMOUNT = 25n; // NEVER 50 — hard lock
 const TOKEN_DECIMALS = 9;
 const COOLDOWN_SEC = 24 * 60 * 60; // 24 hours in seconds (for Redis TTL)
 const COOLDOWN_MS = COOLDOWN_SEC * 1000;
@@ -736,7 +736,7 @@ app.get("/api/status", async (req, res) => {
     res.status(200).json(Object.assign({
       live: isLive,
       claimAmount: 25,
-      buildId: "BUILD-25-20260817d",
+      buildId: "BUILD-25-FINAL-STOP50",
       cooldownHours: 24,
       token: TOKEN_ADDRESS,
       pool: extra.pool != null ? extra.pool : "unknown",
