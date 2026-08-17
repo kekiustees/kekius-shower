@@ -558,6 +558,11 @@ app.use(express.static(__dirname, {
     if (filePath.endsWith(".jpg") || filePath.endsWith(".jpeg")) {
       res.setHeader("Content-Type", "image/jpeg");
     }
+    // Never cache the app shell so claim amount text always updates after deploy
+    if (filePath.endsWith("index.html")) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+      res.setHeader("Pragma", "no-cache");
+    }
   }
 }));
 app.get("/logo.jpg", (req, res) => {
@@ -949,6 +954,8 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
 });
 
 app.get("*", (req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
