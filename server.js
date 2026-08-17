@@ -347,26 +347,56 @@ async function redisReleaseFingerprint(fp) {
  * On-chain cooldown: true if faucet wallet already sent KEKIUS to this address
  * in the last ~24h (~7500 blocks). Fail-closed on RPC errors when asked.
  */
+/**
+ * Returns:
+ *   true  = found an on-chain Transfer from faucet → address in window
+ *   false = no transfer found (or check skipped / RPC soft-failed)
+ * Throws only if you want strict mode; by default RPC errors return false
+ * so legitimate users are not blocked when Alchemy rate-limits getLogs.
+ */
 async function onChainRecentlyClaimed(toAddress) {
   if (!provider || !wallet) return false;
-  const transferTopic = ethers.id("Transfer(address,address,uint256)");
-  const fromTopic = ethers.zeroPadValue(wallet.address, 32);
-  const toTopic = ethers.zeroPadValue(ethers.getAddress(toAddress), 32);
-  const latest = await provider.getBlockNumber();
-  const span = 7500; // ~24h on Ethereum
-  const start = Math.max(0, latest - span);
-  const chunk = 2000;
-  for (let from = start; from <= latest; from += chunk) {
-    const to = Math.min(latest, from + chunk - 1);
-    const logs = await provider.getLogs({
-      address: TOKEN_ADDRESS,
-      fromBlock: from,
-      toBlock: to,
-      topics: [transferTopic, fromTopic, toTopic]
-    });
-    if (logs && logs.length > 0) return true;
+  try {
+    const transferTopic = ethers.id("Transfer(address,address,uint256)");
+    const fromTopic = ethers.zeroPadValue(wallet.address, 32);
+    const toTopic = ethers.zeroPadValue(ethers.getAddress(toAddress), 32);
+
+    // Cap wait so claim never hangs
+    const latest = await Promise.race([
+      provider.getBlockNumber(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("getBlockNumber timeout")), 4000))
+    ]);
+
+    // ~12h window is enough as backup to Redis; smaller = fewer RPC calls / rate limits
+    const span = 3600;
+    const start = Math.max(0, latest - span);
+    // Alchemy free tier often limits large getLogs ranges — keep chunks small
+    const chunk = 500;
+
+    for (let from = start; from <= latest; from += chunk) {
+      const to = Math.min(latest, from + chunk - 1);
+      try {
+        const logs = await Promise.race([
+          provider.getLogs({
+            address: TOKEN_ADDRESS,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferTopic, fromTopic, toTopic]
+          }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("getLogs timeout")), 5000))
+        ]);
+        if (logs && logs.length > 0) return true;
+      } catch (chunkErr) {
+        // Skip this chunk on rate-limit; do not fail the whole claim
+        console.warn("onChain chunk skip", from, to, chunkErr.message);
+        continue;
+      }
+    }
+    return false;
+  } catch (e) {
+    console.warn("onChainRecentlyClaimed soft-fail:", e.message);
+    return false; // soft-fail — Redis cooldowns remain the primary lock
   }
-  return false;
 }
 
 /** Max claims per IP / 24h (default 2) */
@@ -976,19 +1006,20 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       reservedAddress = address;
     }
 
-    // ========== 7) On-chain recent claim check ==========
+    // ========== 7) On-chain recent claim check (backup only) ==========
+    // Primary lock is Redis. On-chain is best-effort.
+    // RPC rate-limits must NOT block legitimate claims with "Could not verify claim history".
     if (isLive && wallet && provider) {
       try {
-        if (await onChainRecentlyClaimed(address)) {
+        const paid = await onChainRecentlyClaimed(address);
+        if (paid) {
           await unwind();
           inflight.delete(key);
           return res.status(429).json(safeError("Already claimed in the last 24 hours. One claim per address per day."));
         }
       } catch (e) {
-        console.error("On-chain cooldown check failed:", e.message);
-        await unwind();
-        inflight.delete(key);
-        return res.status(503).json(safeError("Could not verify claim history. Try again in a minute."));
+        // Soft-fail: log and continue. Redis already reserved this address/IP/device.
+        console.warn("On-chain cooldown check skipped:", e.message);
       }
     }
 
