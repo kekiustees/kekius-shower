@@ -461,6 +461,7 @@
     const API_BASE = "";
 
     let captchaA = 0, captchaB = 0;
+    let challengeId = null;
     let provider = null;
     let signer = null;
     let isLive = false;
@@ -553,11 +554,28 @@
       $("claimBtn").textContent = reason || "Already claimed (24h cooldown)";
     }
 
-    function newCaptcha() {
+    async function newCaptcha() {
+      $("captchaAnswer").value = "";
+      $("captchaQuestion").textContent = "…";
+      challengeId = null;
+      try {
+        const res = await fetch(API_BASE + "/api/challenge");
+        const data = await res.json();
+        if (data && data.question) {
+          captchaA = data.a;
+          captchaB = data.b;
+          challengeId = data.id;
+          $("captchaQuestion").textContent = data.question;
+          return;
+        }
+      } catch (e) {
+        console.warn("challenge fetch failed", e);
+      }
+      // Fallback local (DEMO only — LIVE claims need server challenge)
       captchaA = Math.floor(Math.random() * 12) + 1;
       captchaB = Math.floor(Math.random() * 12) + 1;
+      challengeId = null;
       $("captchaQuestion").textContent = `${captchaA} + ${captchaB} = ?`;
-      $("captchaAnswer").value = "";
     }
 
     async function loadStatus() {
@@ -728,7 +746,14 @@
         const res = await fetch(API_BASE + "/api/claim", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address, signature, message, fingerprint })
+          body: JSON.stringify({
+            address,
+            signature,
+            message,
+            fingerprint,
+            challengeId,
+            captchaAnswer: parseInt($("captchaAnswer").value, 10)
+          })
         });
 
         const data = await res.json();

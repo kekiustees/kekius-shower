@@ -375,6 +375,67 @@ function setClaimCookie(res) {
   );
 }
 
+function subnetKey(ip) {
+  // IPv4 /24 grouping to stop VPN hop farming on same range
+  if (!ip || ip === "unknown") return null;
+  if (ip.includes(":")) {
+    // coarse IPv6: first 4 hextets
+    const parts = ip.split(":").filter(Boolean);
+    if (parts.length >= 4) return "drip:net6:" + parts.slice(0, 4).join(":");
+    return "drip:net6:" + ip;
+  }
+  const p = ip.split(".");
+  if (p.length === 4) return "drip:net:" + p[0] + "." + p[1] + "." + p[2];
+  return null;
+}
+
+async function redisReserveSubnet(ip) {
+  const sk = subnetKey(ip);
+  if (!sk) return false;
+  const result = await redisCommand(["SET", sk, String(Date.now()), "NX", "EX", COOLDOWN_SEC]);
+  return result === "OK";
+}
+
+async function redisReleaseSubnet(ip) {
+  const sk = subnetKey(ip);
+  if (!sk) return;
+  try { await redisCommand(["DEL", sk]); } catch {}
+}
+
+function isBotUa(ua) {
+  if (!ua || typeof ua !== "string" || ua.length < 10) return true;
+  const s = ua.toLowerCase();
+  const bots = ["curl", "wget", "python-requests", "python-urllib", "httpclient", "go-http", "scrapy", "headless", "phantom", "selenium", "puppeteer", "playwright", "axios/", "node-fetch", "postman", "insomnia", "httpie"];
+  return bots.some((b) => s.includes(b));
+}
+
+async function createChallenge() {
+  const a = 1 + Math.floor(Math.random() * 12);
+  const b = 1 + Math.floor(Math.random() * 12);
+  const id = crypto.randomBytes(16).toString("hex");
+  if (hasRedis) {
+    await redisCommand(["SET", "drip:chal:" + id, String(a + b), "EX", 300]);
+  }
+  return { id, a, b, question: a + " + " + b + " = ?" };
+}
+
+async function consumeChallenge(id, answer) {
+  if (!id || typeof id !== "string" || id.length < 16 || id.length > 80) return false;
+  const n = Number(answer);
+  if (!Number.isInteger(n)) return false;
+  if (!hasRedis) {
+    // Without Redis cannot securely verify one-time challenges
+    return false;
+  }
+  const key = "drip:chal:" + id;
+  const expected = await redisCommand(["GET", key]);
+  if (expected == null || expected === "") return false;
+  // one-time use
+  await redisCommand(["DEL", key]);
+  return String(expected) === String(n);
+}
+
+
 // ============ FILE FALLBACK (local/demo only) ============
 function loadClaims() {
   try {
@@ -518,6 +579,22 @@ const claimLimiter = rateLimit({
 });
 
 // ============ ROUTES ============
+app.get("/api/challenge", async (req, res) => {
+  try {
+    if (!hasRedis) {
+      // still return a local challenge for DEMO UI, but claims will fail LIVE without Redis
+      const a = 1 + Math.floor(Math.random() * 12);
+      const b = 1 + Math.floor(Math.random() * 12);
+      return res.json({ id: "demo", a, b, question: a + " + " + b + " = ?", demo: true });
+    }
+    const ch = await createChallenge();
+    res.json(ch);
+  } catch (e) {
+    console.error("challenge error:", e.message);
+    res.status(503).json(safeError("Challenge unavailable"));
+  }
+});
+
 app.get("/api/status", async (req, res) => {
   await ensureWallet();
   let pool = "unknown";
@@ -571,7 +648,12 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
   let usedRedis = false;
 
   try {
-    const { address, signature, message, fingerprint } = req.body || {};
+    const { address, signature, message, fingerprint, challengeId, captchaAnswer } = req.body || {};
+
+    const ua = String(req.headers["user-agent"] || "");
+    if (isBotUa(ua)) {
+      return res.status(403).json(safeError("Automated clients are not allowed."));
+    }
 
     if (!address || typeof address !== "string" || !ethers.isAddress(address)) {
       return res.status(400).json(safeError("Invalid Ethereum address"));
@@ -648,6 +730,21 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
     let reservedFp = null;
     let reservedIp = false;
 
+    // Signed message must request the current amount (blocks old 50-token scripts)
+    if (!message.includes(String(CLAIM_AMOUNT) + " KEKIUS")) {
+      inflight.delete(key);
+      return res.status(400).json(safeError("Invalid claim amount in message. Refresh the page."));
+    }
+
+    // Server-side one-time captcha (required when Redis is configured)
+    if (hasRedis) {
+      const okCh = await consumeChallenge(challengeId, captchaAnswer);
+      if (!okCh) {
+        inflight.delete(key);
+        return res.status(400).json(safeError("Captcha failed or expired. Refresh and try again."));
+      }
+    }
+
     // Fingerprint is REQUIRED (bots used to omit it and skip device limit)
     if (!fp || fp.length < 6) {
       inflight.delete(key);
@@ -706,6 +803,18 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
           );
         }
         reservedIp = true;
+
+        // 4) Per-/24 network: 1 claim / 24h (stops sequential VPN IPs in same range)
+        const netOk = await redisReserveSubnet(ip);
+        if (!netOk) {
+          await redisReleaseClaim(address);
+          if (reservedFp) await redisReleaseFingerprint(reservedFp);
+          if (reservedIp) await redisDecrIp(ip);
+          inflight.delete(key);
+          return res.status(429).json(
+            safeError("This network range already claimed in the last 24 hours.")
+          );
+        }
       } catch (e) {
         inflight.delete(key);
         console.error("Redis cooldown error:", e.message);
@@ -737,6 +846,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
           if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
           if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
           if (usedRedis && reservedIp) await redisDecrIp(ip);
+          if (usedRedis) await redisReleaseSubnet(ip);
           inflight.delete(key);
           return res.status(429).json(
             safeError("Already claimed in the last 24 hours. One claim per address per day.")
@@ -748,6 +858,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
         if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
         if (usedRedis && reservedIp) await redisDecrIp(ip);
+        if (usedRedis) await redisReleaseSubnet(ip);
         inflight.delete(key);
         return res.status(503).json(
           safeError("Could not verify claim history. Try again in a minute.")
@@ -764,6 +875,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
         if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
         if (usedRedis && reservedIp) await redisDecrIp(ip);
+        if (usedRedis) await redisReleaseSubnet(ip);
         inflight.delete(key);
         return res.status(503).json(safeError("Drip is empty. Come back later."));
       }
@@ -777,6 +889,7 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
         if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
         if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
         if (usedRedis && reservedIp) await redisDecrIp(ip);
+        if (usedRedis) await redisReleaseSubnet(ip);
         inflight.delete(key);
         console.error("Transfer failed:", sendErr.message);
         return res.status(500).json(safeError("Token transfer failed. Please try again."));
