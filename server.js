@@ -575,8 +575,15 @@ app.use(express.static(__dirname, {
     }
   }
 }));
-app.get("/logo.jpg", (req, res) => {
-  res.sendFile(path.join(__dirname, "logo.jpg"));
+app.get(["/logo.jpg", "/logo.jpeg", "/favicon.ico"], (req, res) => {
+  const logoPath = path.join(__dirname, "logo.jpg");
+  if (!fs.existsSync(logoPath)) {
+    console.error("logo.jpg missing at", logoPath, "dir=", __dirname);
+    return res.status(404).send("logo missing");
+  }
+  res.setHeader("Content-Type", "image/jpeg");
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.sendFile(logoPath);
 });
 
 app.use("/api/", rateLimit({
@@ -611,7 +618,12 @@ app.get("/api/challenge", async (req, res) => {
 });
 
 app.get("/api/status", async (req, res) => {
-  await ensureWallet();
+  try {
+    await ensureWallet();
+  } catch (e) {
+    console.error("ensureWallet in status:", e.message);
+  }
+  try {
   let pool = "unknown";
   if (isLive && token && wallet) {
     try {
@@ -622,7 +634,6 @@ app.get("/api/status", async (req, res) => {
         if (!Number.isFinite(decimals)) decimals = TOKEN_DECIMALS;
       } catch {}
       const formatted = ethers.formatUnits(bal, decimals);
-      // Guard against bad format results
       pool = Number.isFinite(Number(formatted)) ? formatted : "unknown";
     } catch (e) {
       console.error("Status balance read failed:", e.message);
@@ -631,7 +642,11 @@ app.get("/api/status", async (req, res) => {
   }
   let redis = { configured: hasRedis, ok: false, error: null };
   if (hasRedis) {
-    redis = Object.assign({ configured: true }, await redisPing());
+    try {
+      redis = Object.assign({ configured: true }, await redisPing());
+    } catch (e) {
+      redis = { configured: true, ok: false, error: e.message };
+    }
   } else if (UPSTASH_URL || UPSTASH_TOKEN) {
     redis.error = "Redis env vars present but invalid (URL must start with https://)";
   }
@@ -645,7 +660,6 @@ app.get("/api/status", async (req, res) => {
     cooldownStore: redis.ok ? "redis" : (hasRedis ? "redis-error" : "file-only"),
     redis,
     initError: isLive ? null : initError,
-    // Safe diagnostics (never returns the actual key)
     debug: {
       privateKeyPresent: keyBody.length > 0,
       privateKeyHexLength: keyBody.length,
@@ -655,7 +669,18 @@ app.get("/api/status", async (req, res) => {
       walletAddress: wallet ? wallet.address : null
     }
   });
+  } catch (e) {
+    console.error("Status endpoint error:", e.message);
+    res.status(200).json({
+      live: false,
+      claimAmount: Number(CLAIM_AMOUNT),
+      pool: "unknown",
+      error: "status failed: " + e.message,
+      redis: { configured: hasRedis, ok: false }
+    });
+  }
 });
+
 
 app.post("/api/claim", claimLimiter, async (req, res) => {
   await ensureWallet();
@@ -966,7 +991,12 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
 app.get("*", (req, res) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   res.setHeader("Pragma", "no-cache");
-  res.sendFile(path.join(__dirname, "index.html"));
+  const indexPath = path.join(__dirname, "index.html");
+  if (!fs.existsSync(indexPath)) {
+    console.error("index.html missing at", indexPath);
+    return res.status(500).send("index.html missing from deployment");
+  }
+  res.sendFile(indexPath);
 });
 
 // Kick off wallet init immediately (needed on Vercel serverless)

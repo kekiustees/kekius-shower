@@ -316,7 +316,7 @@
   <div class="container">
     <header>
       <img src="/logo.jpg" alt="Kekius Maximus" class="logo-img" id="logoImg"
-           onerror="this.onerror=null; this.src='logo.jpg';" />
+           onerror="this.onerror=null; this.src='logo.jpg'; if(!this.complete||this.naturalWidth===0){this.style.display='none'}" />
       <div class="brand">Kekius Maximus</div>
       <div class="subtitle">Drip</div>
       <p class="tagline"><span id="taglineAmount">25</span> KEKIUS every 24 hours.<br>Must already hold KEKIUS. No farming.</p>
