@@ -866,6 +866,31 @@ app.post("/api/claim", claimLimiter, async (req, res) => {
       }
     }
 
+    // ---- Must already hold KEKIUS (anti-farm empty wallets) ----
+    if (isLive && token) {
+      try {
+        const holderBal = await token.balanceOf(address);
+        if (holderBal === 0n) {
+          if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+          if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+          if (usedRedis && reservedIp) await redisDecrIp(ip);
+          if (usedRedis) await redisReleaseSubnet(ip);
+          inflight.delete(key);
+          return res.status(403).json(
+            safeError("You must already hold KEKIUS in this wallet to claim.")
+          );
+        }
+      } catch (e) {
+        console.error("Holder balance check failed:", e.message);
+        if (usedRedis && reservedAddress) await redisReleaseClaim(reservedAddress);
+        if (usedRedis && reservedFp) await redisReleaseFingerprint(reservedFp);
+        if (usedRedis && reservedIp) await redisDecrIp(ip);
+        if (usedRedis) await redisReleaseSubnet(ip);
+        inflight.delete(key);
+        return res.status(503).json(safeError("Could not verify KEKIUS balance. Try again."));
+      }
+    }
+
     // ---- Send tokens ----
     let txHash = null;
     if (isLive && token && wallet) {

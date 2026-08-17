@@ -81,7 +81,7 @@ After redeploy, the site will switch to **LIVE** mode if the key and RPC are cor
 ### Recommended settings
 - Set `ALLOWED_ORIGIN` in Vercel env vars to your real domain  
   (example: `https://kekius-drip.vercel.app`) so only your site can call the API.
-- Keep the claim amount low (currently 50 KEKIUS).
+- Keep the claim amount low (currently 25 KEKIUS).
 - Check the Vercel logs occasionally for unusual activity.
 
 ### What the code already protects against
@@ -98,7 +98,7 @@ After redeploy, the site will switch to **LIVE** mode if the key and RPC are cor
 1. Visit your Vercel URL (example: `https://kekius-drip.vercel.app`).
 2. Connect MetaMask.
 3. Solve the CAPTCHA.
-4. Click **Claim 50 KEKIUS**.
+4. Click **Claim 25 KEKIUS**.
 5. Approve the signature in your wallet.
 6. You should see a success message and a real transaction on Etherscan (if LIVE).
 

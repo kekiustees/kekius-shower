@@ -2,14 +2,14 @@
 
 A simple claim tool in the spirit of the original 2010 Bitcoin faucet.
 
-**50 KEKIUS every 24 hours. No signup. Just connect + sign.**
+**25 KEKIUS every 24 hours. No signup. Just connect + sign.**
 
 ## Features
 
 - Clean green + gold theme with the provided Pepe logo
 - **Cinzel** serif font for “Kekius Maximus”
 - Contract: `0xAE1EDabaC9a0DDa644B2F7Ec48759d37Ab257f78`
-- 50 tokens per address per 24 hours
+- 25 tokens per address per 24 hours
 - Wallet signature required (strong protection against IP rotation + address spam)
 - 5-minute signature expiry (anti-replay)
 - Device fingerprint soft limit
